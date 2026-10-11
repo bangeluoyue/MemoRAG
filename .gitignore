@@ -1,0 +1,64 @@
+# ==============================
+# Node.js / Dependencies
+# ==============================
+node_modules/
+.pnpm-store/
+.npm/
+.yarn/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# ==============================
+# Environment / Secrets
+# ==============================
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+
+# ==============================
+# Build / Cache / Test
+# ==============================
+dist/
+build/
+coverage/
+.cache/
+.vite/
+*.tsbuildinfo
+
+# ==============================
+# Local Data / Uploads
+# ==============================
+*.epub
+*.db
+*.sqlite
+*.sqlite3
+uploads/
+volumes/
+data/private/
+
+# ==============================
+# Docker Local Data
+# ==============================
+docker/volumes/
+
+# ==============================
+# Editor / OS
+# ==============================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ==============================
+# Temporary Files
+# ==============================
+tmp/
+temp/
+*.tmp
+*.bak
