@@ -13,13 +13,16 @@ class ScriptedModel {
     rewriteResults = [],
     evaluationActions = ["generate"],
     answer = "这是测试回答 [本地1]",
+    answers = null,
   } = {}) {
     this.strategy = strategy;
     this.subQuestions = subQuestions;
     this.rewriteResults = [...rewriteResults];
     this.evaluationActions = [...evaluationActions];
     this.answer = answer;
+    this.answers = answers ? [...answers] : null;
     this.rewritePrompts = [];
+    this.invokePrompts = [];
   }
 
   withStructuredOutput(schema) {
@@ -61,8 +64,11 @@ class ScriptedModel {
     };
   }
 
-  async invoke() {
-    return { content: this.answer };
+  async invoke(prompt) {
+    this.invokePrompts.push(prompt);
+    return {
+      content: this.answers?.length ? this.answers.shift() : this.answer,
+    };
   }
 }
 
@@ -401,4 +407,79 @@ test("mergeUniqueDocuments keeps the best score and applies the limit", () => {
   );
 
   assert.deepEqual(documents.map((item) => item.id), ["a", "b"]);
+});
+
+test("citation snapshot preserves valid references after dedupe, sorting and trimming", async () => {
+  const model = new ScriptedModel({
+    answer: "高分片段见 [本地1]，次高分片段见 [本地2]。",
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search() {
+        return [
+          document("a", "A 的旧片段", 0.4),
+          document("b", "B 的片段", 0.8),
+          document("a", "A 的高分片段", 0.9),
+          document("c", "被裁剪的片段", 0.7),
+        ];
+      },
+    },
+    bookName: "天龙八部",
+    maxContextDocuments: 2,
+  });
+
+  const result = await graph.invoke(initialState());
+
+  assert.deepEqual(result.citationDocuments.map((item) => item.id), ["a", "b"]);
+  assert.equal(result.citationDocuments[0].content, "A 的高分片段");
+  assert.equal(result.generation, "高分片段见 [本地1]，次高分片段见 [本地2]。");
+  assert.equal(result.citationValidation.status, "valid");
+  assert.equal(result.citationValidation.correctionAttempts, 0);
+  assert.equal(result.citationValidation.contentSupportChecked, false);
+  assert.match(model.invokePrompts[0], /\[本地1\]\n文档ID：a/);
+  assert.match(model.invokePrompts[0], /\[本地2\]\n文档ID：b/);
+  assert.doesNotMatch(model.invokePrompts[0], /文档ID：c/);
+});
+
+test("invalid local references are removed after the bounded correction still fails", async () => {
+  const model = new ScriptedModel({
+    answers: [
+      "错误引用 [本地2]，有效引用 [本地1]。",
+      "仍有错误引用 [本地9]，保留有效引用 [本地1]。",
+    ],
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: { async search() { return [document("only", "唯一片段")]; } },
+    bookName: "天龙八部",
+  });
+
+  const result = await graph.invoke(initialState());
+
+  assert.doesNotMatch(result.generation, /\[本地9\]/);
+  assert.match(result.generation, /\[本地1\]/);
+  assert.equal(result.citationValidation.status, "sanitized");
+  assert.deepEqual(result.citationValidation.initialInvalidReferences, ["[本地2]"]);
+  assert.deepEqual(result.citationValidation.removedInvalidReferences, ["[本地9]"]);
+  assert.deepEqual(result.citationValidation.finalInvalidReferences, []);
+  assert.equal(result.citationValidation.correctionAttempts, 1);
+  assert.equal(result.citationValidation.contentSupportChecked, false);
+});
+
+test("ordinary answers without local citations do not trigger correction", async () => {
+  const model = new ScriptedModel({ answer: "资料不足，暂时无法确认。" });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: { async search() { return []; } },
+    bookName: "天龙八部",
+  });
+
+  const result = await graph.invoke(initialState());
+
+  assert.equal(result.generation, "资料不足，暂时无法确认。");
+  assert.equal(result.citationValidation.status, "valid");
+  assert.deepEqual(result.citationValidation.finalReferences, []);
+  assert.equal(result.citationValidation.correctionAttempts, 0);
+  assert.equal(model.invokePrompts.length, 1);
 });

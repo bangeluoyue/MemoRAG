@@ -1,8 +1,10 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v0.1（2026-10-12）  
-> 状态：**待 Codex 核对仓库并确认**。这是需求与验收约定，不是代码已经实现的证明。  
-> 建议保存路径：`docs/specs/memorag-roadmap.md`
+> 版本：v0.3（2026-10-12）
+>
+> 状态：**P3-0 已确认；P3-1 代码完成，20/20 Mock 测试通过，真实模型引用纠正效果待验证。**
+>
+> 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
 ## 1. 产品目标与优先级
 
@@ -15,150 +17,407 @@
 
 **优先级：RAG 正确性与可验证性 > 数据入库可用性 > API/流式输出 > 简单 React 界面。** 不为堆技术而增加无用复杂度；前端只需演示核心能力。
 
-## 2. 项目当前基线（来自既有开发报告，须在仓库中核实）
+## 2. P3-0 核对范围与证据边界
 
-- 仓库：`/home/lms/project/MemoRAG`；后端：`backend/`。
-- 现有主要模块（以代码为准）：`src/rag/ebook/agent-graph.js`、`milvus-retriever.js`、`index.js`、`src/cli/chat.js`。
-- 现有 EPUB Milvus Collection：`ebook_collection`；`bookId` 使用字符串形式；Embedding 为 1024 维。**不得无授权执行任何数据库写操作。**
-- 已实现：路由、拆题、依赖型子问题动态改写、安全回退、多轮 Milvus 检索、评估、可选 Bocha 联网、答案、来源列表与 trace。
-- Codex 上轮报告：4 个测试文件、16 项 Mock 测试通过；一次真实 CLI 问答正常完成，本地检索 2 次、联网 0 次。
-- **真实动态改写尚未证明命中 `rewritten` 分支**：上一轮真实运行中，拆题节点已把第二问明确写作“萧峰……”，改写节点因此保留原查询。
-- **待查问题：答案含 `[本地15]`，CLI 仅显示 `[本地1]`～`[本地14]`**。须首先定位是展示截断、映射错位还是模型无效引用，不能先入为主。
-- 旧版 Demo 里有 ES + Milvus 混合检索、查询扩展及 Qwen Rerank 实现，但**不能认定其已集成到新仓库**；以实际目录和测试为准。
+本轮只执行了以下只读核对和文档更新：
 
-## 3. 全局不可破坏的约束（Invariants）
+- 阅读 `backend/src`、`backend/test`、`backend/legacy`、`package.json`、锁文件、`.env.example` 和 README。
+- 只读取本地 `.env` 的**变量名**以及非密钥布尔开关状态，不读取或回显任何密钥、URL 值。
+- 检查已安装的 `@langchain/*` 与 `langsmith` 源码，以确认当前锁定版本实际接受的环境变量别名。
+- 查阅阿里云 Model Studio 官方 Rerank HTTP 协议；未发起 Rerank 请求。
+- 未连接 Elasticsearch、Milvus、LangSmith 或 Bocha，未执行数据库读写、付费 API 或真实模型调用。
 
-- 保持 `createEbookRag().ask(question, options)` 的现有调用方式，保持 `answer`、`route`、`sources`、`webSources`、`trace` 等输出的兼容性（允许向后兼容地新增字段）。
-- 不改变 `question` 原始值；动态改写后的实际查询必须进入 Retriever / Rerank；保留原始子问题及改写记录。
-- 现有 simple 分支、最大检索次数、最大联网次数、Bocha 降级、文档合并去重与 `bookId` 过滤持续有效。
-- **严格知识库隔离**：EPUB 与生活笔记不可误混检；用户私有笔记还应预留 `userId` 级别隔离。
-- 不能跨 Elasticsearch/Milvus 比较原始分数并直接混排；混合召回应有统一的融合/重排策略。
-- **禁止数据库写操作**：在第三阶段，仅做只读检索/Mock 测试；不创建、删除、覆盖或重建 Collection/Index，不插入、更新、删除数据。入库功能必须在后续独立阶段经用户批准后实现。
-- 不读取、回显、提交真实密钥。`.env` 不进 Git；新增配置只写 `.env.example` 中的变量名、无密钥占位符。
-- 默认使用 Mock 测试，不批量触发付费模型、Rerank 或联网 API；真实联调必须明确区分 Mock 与真实结果。
-- LangSmith 的链路追踪可能上传提示词和上下文；生活笔记等私人文本默认不开启对外追踪，须提供关闭/脱敏策略，不能仅靠“日志不打印原文”声称无数据外传。
+因此，下列结论必须保持边界：
 
-## 4. 第三阶段拆分（严格一次一个任务）
+- `ebook_collection`、1024 维和字符串 `bookId` 是**当前代码默认值/契约**；本轮没有连接 Milvus，不能把它们表述为现存数据库 Schema 的再次验证结果。
+- `life_notes` 只是旧 Demo 中的硬编码索引/Collection 名称；仓库没有 Schema、mapping、migration 或探测结果，不能证明任何生活笔记索引实际存在。
+- 上轮真实 CLI 结果仅作为历史观察保留；本轮没有复跑真实问答。
 
-### P3-0：规格核对与设计冻结（**第一轮，不写功能代码**）
+## 3. 当前仓库架构与依赖图
 
-**目标**：Codex 只读检查当前仓库、旧 Demo 和测试，明确各功能已实现/未实现状态，更新本规格文档与任务清单。
+### 3.1 当前主线
 
-交付：
+```mermaid
+flowchart LR
+  CLI["src/cli/chat.js"] --> API["createEbookRag().ask()"]
+  CFG["src/config.js"] --> API
+  API --> GRAPH["EPUB LangGraph"]
+  GRAPH --> ROUTE["route / decompose / rewrite"]
+  ROUTE --> RETRIEVE["MilvusBookRetriever.search(currentQuery)"]
+  RETRIEVE --> EMB["OpenAIEmbeddings"]
+  RETRIEVE --> MV["Milvus: book_id filter"]
+  RETRIEVE --> MERGE["按 id 去重、score 排序、裁剪"]
+  MERGE --> CTX["buildLocalContext: [本地N]"]
+  CTX --> EVAL["evaluate"]
+  EVAL -->|可选| WEB["Bocha Web Search"]
+  EVAL --> GEN["generate"]
+  GEN --> OUT["answer + documents + webSources + trace"]
+  OUT --> MAP["index.js 再生成 sources.reference"]
+  MAP --> CLI
+```
 
-- 仓库架构与依赖图（简洁即可）。
-- 引用错位问题的候选原因及最小定位路径。
-- Rerank 现有实现位置、入参/出参及环境变量兼容方案。
-- LangSmith 的当前配置方式、隐私风险和开关方案。
-- ES/生活笔记索引是否实际存在（只依据代码/配置，不在未许可时访问生产服务）。
-- 按 P3-1～P3-4 拆分的文件影响清单、风险、最小验收测试与执行顺序。
+`createEbookRag()` 通过依赖注入允许 Mock `model`、`retriever` 和 `webSearch`；这也是当前测试不访问真实服务的基础。
 
-**完成标准**：用户审阅规格并确认后，才允许进入 P3-1。
+### 3.2 旧 Demo（未接入当前主线）
 
-### P3-1：引用编号一致性修复（单独一轮）
+```mermaid
+flowchart LR
+  QA["legacy/hybrid/query-augment.mjs"] --> ES["Elasticsearch recall"]
+  QA --> LMV["Milvus recall"]
+  ES --> HM["concat + id 去重"]
+  LMV --> HM
+  HM --> RR["DashScopeRerank"]
+  RR --> HG["生活笔记回答"]
+```
 
-**目标**：答案引用的 `[本地N]` 与最终 `sources` 可以一一对应。
+旧混合检索文件具有模块加载即创建客户端、连接既有 Collection、执行图和调用模型的顶层副作用。当前 `package.json` 也未声明它所需的 `@elastic/elasticsearch` 和 `@langchain/community`。因此它不是可直接导入的生产模块。
 
-要求：
+## 4. 现有能力核对结果
 
-- 先追踪 `localContext → generate → sources → CLI`，确认真实根因。
-- 以**生成时提供给模型的同一份有序文档集合**建立稳定引用映射；去重/排序/裁剪后的编号不得错位。
-- 检测生成答案中的无效引用，避免对不存在的来源提供假链接；保持原有返回结构兼容。
-- 区分“引用编号有效”和“该引文真正支持结论”，不虚称后者自动解决。
+| 能力 | 代码证据 | P3-0 结论 |
+| --- | --- | --- |
+| `createEbookRag().ask(question, options)` | `src/rag/ebook/index.js` | **已实现**；返回 `answer`、`route`、`sources`、`webSources`、`trace`。 |
+| simple/complex 路由与 simple 直答 | `agent-graph.js` 的 `routeQuestion` / `directAnswer` | **已实现并有 Mock 测试**；simple 分支不检索。 |
+| 问题拆分 | `decomposeQuestion` | **已实现并有 Mock 覆盖**。 |
+| 依赖型子问题改写 | `rewriteSubQuestion`、`validateRewrite` | **已实现并有 Mock 覆盖**；会检查支持文档、实体落地、冲突及模型异常回退。历史真实运行尚未证明进入 `rewritten` 分支。 |
+| 改写查询进入实际检索 | `retrieveNode` 使用 `state.currentQuery` | **已实现并有 Mock 覆盖**。 |
+| EPUB Milvus 只读检索 | `milvus-retriever.js` | **代码已实现**；Embedding 维度校验、`book_id` 过滤、COSINE、`nprobe` 和字段映射有 Mock 测试。本轮未连真实 Milvus。 |
+| 多轮检索、去重、裁剪 | `mergeUniqueDocuments` | **已实现并有 Mock 覆盖**；同 ID 保留较高 Milvus `score`，再排序并限制数量。 |
+| 检索/联网次数上限 | `evaluateNode` | **已实现并有 Mock 覆盖**。 |
+| Bocha 可选联网 | `config.js`、`web-search.js` | **部分实现**；无 Key 或开关关闭时禁用，次数限制有效；但请求失败会直接抛错，当前没有运行时降级。旧规格中的“Bocha 降级已实现”不成立。 |
+| 回答、本地来源、网页来源、执行 trace | `generateNode`、`index.js` | **已实现基础结构**；P3-1 已修复本地引用快照与编号合法性，多轮网页编号仍是已知限制，见第 6 节。 |
+| Qwen Rerank | 仅 `legacy/hybrid/dashscope-rerank.mjs` | **未接入主线**。 |
+| EPUB 的 ES 混合检索 | 无代码、无索引定义 | **不存在**，本阶段也不设计为 EPUB 能力。 |
+| 生活笔记 ES + Milvus 检索 | 仅旧 Demo | **未产品化**；无当前适配层、配置、隔离或测试。 |
+| 生活笔记 CRUD / 原始存储 / 双写 | 无当前代码 | **未实现**，属于 P4-B。 |
+| LangSmith | 由当前 LangChain SDK 根据进程 env 自动启用 | **隐式可用但未受应用控制**；没有显式隐私策略、脱敏、测试隔离或 README 说明。 |
+| EPUB 入库 | 仅 `legacy/agentic/ebook-writter.mjs` | **不属于当前主线**；旧脚本会创建索引并写 Milvus，且使用 `ebook2`，本阶段禁止执行。 |
 
-验收：
+### 4.1 测试基线
 
-- 回归复现 `[本地15]` / 仅展示 14 条的问题，证明修复。
-- 自动化覆盖去重、重排、裁剪、引用缺失与普通答案。
-- `npm test` 既有测试保持通过。
+当前有 4 个测试文件，共 16 个 `test()` 声明：
 
-### P3-2：EPUB Milvus 检索接入 Qwen Rerank（单独一轮）
+- `agent-graph.test.js`：11 项。
+- `config.test.js`：2 项。
+- `ebook-rag.test.js`：1 项。
+- `milvus-retriever.test.js`：2 项。
 
-**目标**：在不依赖 ES 的情况下，现有 EPUB 检索可以选择性使用 Rerank。
+在当前 `.env` 下直接执行 `npm test`，测试进程在输出前两个文件后 30 秒内未结束；这是因为当前非密钥开关 `LANGSMITH_TRACING` 处于启用状态，而包含图调用的 Mock 测试会尝试处理外部 trace。显式关闭新旧追踪开关后：
 
-要求：
+```bash
+LANGSMITH_TRACING=false \
+LANGSMITH_TRACING_V2=false \
+LANGCHAIN_TRACING=false \
+LANGCHAIN_TRACING_V2=false \
+npm test
+```
 
-- 优先复用旧 Demo 的 `DashScopeRerank`，核对请求格式与服务端协议。
-- 先 Milvus 召回较宽候选集，再对**同一本书内的候选文档**进行 Rerank，最终输出所需数量，保留文档 ID、章节、内容和引用映射。
-- 空集合跳过；服务失败/超时可配置为回退原 Milvus 顺序；记录失败但不暴露凭证。
-- 给开关与 `topN` 参数合理默认值，实际变量名与旧代码兼容。
-- 在需要时为“实际检索查询”使用改写后的子问题，不回退成原问题。
+结果为 4/4 文件级 suite 通过、0 失败，耗时约 0.57 秒。Node 22 的父测试进程按文件汇总为 4 项；源码中实际有 16 个 `test()` 声明。P3 后续所有 Mock 测试都必须显式隔离外部 tracing，不能依赖开发机 `.env`。
 
-验收：
+## 5. 旧版混合检索与 Rerank 可复用性
 
-- Mock 测试：排序、字段保留、过滤、异常降级、去重、引用保持。
-- 如提供真实凭证和明确授权，可进行**单条、只读、少量费用**的实际联调；不能把 Mock 当成真实联调。
+| 旧实现 | 可复用内容 | 不可直接复用/必须修正 |
+| --- | --- | --- |
+| `legacy/hybrid/dashscope-rerank.mjs` | Bearer 鉴权、`model/query/documents/top_n` 请求形状、按返回 `index` 映射原文档的核心思路 | 无超时；不校验空 URL/Key、重复或越界 index；不保留 `relevance_score` 和原始 rank；错误包含完整响应；打印服务返回；只接受顶层 `results`；没有失败回退。应迁移为无副作用的当前模块并补测试，不直接复制类。 |
+| `legacy/hybrid/query-augment.mjs` | 结构化三路查询、失败回退、查询去重思路 | 会额外调用 LLM；固定三条；与当前“拆题 + 依赖改写”可能重复放大召回和成本。P3-4 最小实现默认不启用查询扩展，先保证 `currentQuery` 原样透传；后续再以独立开关评测。 |
+| `legacy/hybrid/hybrid-retrieval.mjs` | ES hit 转文档、按逻辑 ID 去重、ES/Milvus 并行召回、空集合跳过 Rerank 的思路 | 顶层即连接/执行；依赖缺失；ES 地址、`life_notes`、召回数硬编码；没有 `userId`/知识库过滤；只是 ES 在前、Milvus 在后拼接，既没有 RRF 也没有可靠融合；导入会触发真实服务和模型调用。只能重写为适配层。 |
+| `legacy/agentic/agentic-rag.mjs` | 历史节点设计可作对照 | 当前 `src/rag/ebook/agent-graph.js` 已有更完整、安全的改写和可测试结构，不回迁旧实现。 |
+| `legacy/agentic/ebook-writter.mjs` | 后续 P4-A 可参考 EPUB 分章、分块和批量写入流程 | 会创建/加载/写入 Collection，名称和部分字段值与当前契约不一致；P3 禁止运行或复用。 |
 
-### P3-3：LangSmith 追踪接入与隐私约束（单独一轮）
+### 5.1 Rerank 协议核对
 
-**目标**：可选观察 Agent 的 route/decompose/rewrite/retrieve/rerank/evaluate/web/generate 链路。
+阿里云 Model Studio 当前 `qwen3-rerank` HTTP 兼容协议使用 Bearer Key，正文为顶层 `model`、`query`、`documents`、`top_n`，成功响应在顶层返回按相关性排序的 `results[]`，每项包含输入 `index` 和 `relevance_score`。旧 Demo 的基本请求/响应形状与该协议兼容，前提是 `RERANK_URL` 已指向对应地域和 Workspace 的完整 `/reranks` 端点。
 
-要求：
+官方参考：<https://docs.modelstudio.console.alibabacloud.com/en/model-studio/text-rerank-api>
 
-- 检查当前依赖版本和 env 命名的兼容情况；优先支持 `LANGSMITH_TRACING`、`LANGSMITH_API_KEY`、`LANGSMITH_PROJECT`，对已有 `LANGCHAIN_API_KEY` / `LANGCHAIN_PROJECT` 兼容性进行实证核对，不在代码里推测。
-- 关闭追踪时完全不影响问答；明确说明开启追踪会上传哪些数据。私人笔记默认关闭外部追踪，避免错误披露。
-- 有助于识别不同节点耗时、实际查询、文档 ID、Rerank 前后排序；默认不记录完整私人笔记正文。
+本轮为避免暴露配置，未读取当前 `RERANK_URL` 值，也未发送请求；因此不能声称实际端点或鉴权已经联调。若 URL 指向旧的 `gte-rerank` 服务，旧 Demo 的顶层请求形状未必兼容。
 
-验收：
+## 6. 引用编号问题定位
 
-- 关闭追踪的回归测试。
-- 开启追踪时的独立验证说明与最小联调（如获授权），不得声称仅仅配了 env 就代表云端 trace 已验证。
+### 6.1 P3-0 核对时的本地引用数据流（修复前）
 
-### P3-4：双知识库检索适配层及生活笔记混合检索（单独一轮）
+1. `retrieveNode` 将新结果交给 `mergeUniqueDocuments`，按 ID 去重、按 `score` 重排并裁剪至 `maxContextDocuments`。
+2. 同一节点立即以该 `documents` 数组调用 `buildLocalContext`，按数组下标生成 `[本地1]`～`[本地N]`。
+3. `generateNode` 将 `state.localContext` 原样放入模型提示词。
+4. 图结束后，`src/rag/ebook/index.js` 对 `result.documents` 再按数组下标生成 `sources[].reference`。
+5. `src/cli/chat.js` 对 `result.sources` 使用 `forEach` 全量输出，只把每条正文预览裁剪到 140 字符；它**没有限制来源条数**。
 
-**目标**：使 EPUB 和生活笔记复用通用检索接口，但使用不同检索策略与数据范围。
+### 6.2 P3-0 定位结论
 
-要求：
+- 当前代码中，从最后一次 `localContext` 重建到生成和输出之间没有再次改变 `documents` 的路径。因此在同一次当前版本执行里，`localContext` 与 `sources` 的本地数组顺序理论上相同。
+- CLI 不会把第 15 条来源截掉；“只显示 14 条”的原因不是 CLI 条数限制。
+- `generateNode` 只用自然语言要求模型不要虚构引用，返回后没有解析或校验 `[本地N]`。所以当最终只有 14 条来源时，模型生成 `[本地15]` 会被原样返回。这是当前代码可以确定的首要缺口。
+- 因本轮禁止真实付费调用，历史那一次 `[本地15]` 的原始响应未复跑；P3-1 必须先用 14 条 Mock 文档和包含 `[本地15]` 的脚本化答案确定性复现，再修复。
+- 本地映射目前是“两处按下标独立重建”，虽暂时同序，Rerank 接入后风险会升高；必须改为同一份最终引用快照驱动 prompt 和 API 输出。
 
-- EPUB：继续使用 Milvus（可选 Rerank）；**没有 EPUB 的 ES 索引时不得伪称 EPUB 混合检索**。
-- 生活笔记：为 ES 关键词召回 + Milvus 向量召回 → 文档标准化 → 去重/融合 → Rerank 实现独立适配层。
-- 统一逻辑文档 ID，兼容生活笔记的 tags/date/用户范围，严禁跨租户或跨知识库误检。
-- 第三阶段不做笔记新增、修改、删除和同步入库；若缺少双索引数据，完成 Mock 测试、标注“真实整合未验收”，待第四阶段。
+### 6.3 已确认的网页引用问题
 
-验收：
+`createBochaWebSearch()` 每次调用都从 `[网页1]` 开始生成 `text`，但 `index.js` 对多轮累计的 `webSources` 再从 1 全局编号。第二轮上下文里的 `[网页1]` 最终可能对应 `webSources` 中的 `[网页N]`。本轮 P3-1 按用户确认范围只修复本地引用；多轮网页编号仍是已知未完成项，后续启用多轮网页引用前必须单独修复并验收。
 
-- Mock 测试：跨源同 ID 去重、不同 ID 保留、用户/知识库隔离、空源、服务异常降级、改写查询透传和 rerank 元数据保留。
-- 已有 EPUB 问答接口与回归测试不变。
+### 6.4 P3-1 最小定位路径
 
-## 5. 后续阶段（本阶段不实施）
+```text
+mergeUniqueDocuments
+  → 引用快照/编号
+  → buildLocalContext
+  → generateNode 模型输出
+  → 引用解析与合法性校验
+  → createEbookRag().sources / webSources
+  → CLI 展示
+```
+
+“编号存在且可映射”只证明引用格式有效，不证明被引用片段在语义上支持答案。语义蕴含/忠实度评估留在 P5，P3-1 不得宣称自动解决。
+
+## 7. 环境变量与版本兼容核对
+
+### 7.1 当前安装版本
+
+| 包 | 实际安装版本 |
+| --- | --- |
+| `@langchain/core` | `1.2.17` |
+| `@langchain/langgraph` | `1.4.21` |
+| `@langchain/openai` | `1.6.2` |
+| `langsmith`（传递依赖） | `0.10.11` |
+| `@zilliz/milvus2-sdk-node` | `3.0.6` |
+
+### 7.2 LangSmith
+
+对本地已安装源码的核对结论：
+
+- 追踪开关同时识别 `LANGSMITH_TRACING`、`LANGSMITH_TRACING_V2`、旧名 `LANGCHAIN_TRACING` 和 `LANGCHAIN_TRACING_V2`；值只有精确的字符串 `"true"` 才启用。
+- API Key、Project 和 Endpoint 通过同一别名读取器解析，优先 `LANGSMITH_*`，再回退 `LANGCHAIN_*`。因此当前 `.env` 中 `LANGSMITH_TRACING` + `LANGCHAIN_API_KEY` + `LANGCHAIN_PROJECT` 的混合命名，在已安装版本上是兼容的。
+- SDK 还接受 `LANGSMITH_HIDE_INPUTS`、`LANGSMITH_HIDE_OUTPUTS`、`LANGSMITH_HIDE_METADATA`（以及相应 `LANGCHAIN_*` 别名）。仅隐藏正文但保留安全元数据时，P3-3 应使用显式 Client/Tracer 配置，不能假定设置 env 就完成脱敏。
+- 当前应用代码没有 LangSmith 配置对象或隐私边界；`config.js` 加载 `.env` 后，LangChain 会自动读取这些变量。因此开发机上的全局开关会影响 Mock 测试和所有图调用。
+- `.env.example` 当前没有任何 LangSmith 变量。P3-3 才允许更新它，本轮不修改。
+
+冻结的兼容策略：
+
+1. 文档和新增配置优先使用 `LANGSMITH_TRACING`、`LANGSMITH_API_KEY`、`LANGSMITH_PROJECT`。
+2. 兼容 `LANGCHAIN_API_KEY`、`LANGCHAIN_PROJECT` 以及旧追踪开关；同类变量同时存在时 `LANGSMITH_*` 优先。
+3. 默认不开启外部追踪。`metadata_only` 为默认内容策略：保留节点名、耗时、次数、文档 ID、前后 rank 和错误类别，不上传完整 `content`、`localContext`、`webContext` 或生成答案。
+4. 生活笔记即使进程级追踪已打开，也必须默认使用 `tracingEnabled: false` 的作用域；只有独立的显式私有数据授权开关开启后才允许 trace，且仍默认 `metadata_only`。
+5. Mock 测试必须使用假 Client/Tracer 或显式禁用追踪；不能连接 LangSmith 云端。
+
+### 7.3 Rerank
+
+当前真实 `.env`（仅核对变量名）已有 `RERANK_MODEL`、`RERANK_URL`，没有独立的 `RERANK_API_KEY`；旧 Demo 复用 `OPENAI_API_KEY`。`.env.example` 尚未列出任何 Rerank 变量。
+
+冻结的兼容策略：
+
+| 变量 | 规则 |
+| --- | --- |
+| `ENABLE_RERANK` | 新增，默认 `false`；关闭时不得构造 Rerank 请求。 |
+| `RERANK_URL` | 保留旧名；启用时必填完整 HTTP 端点，不在代码中猜测地域或 Workspace。 |
+| `RERANK_MODEL` | 保留旧名；默认 `qwen3-rerank`。 |
+| `RERANK_API_KEY` | 新增首选专用 Key。 |
+| `DASHSCOPE_API_KEY` | 新增兼容官方常用命名，优先级低于 `RERANK_API_KEY`。 |
+| `OPENAI_API_KEY` | 为兼容旧 Demo 的最后回退；文档需提示最好使用专用 Rerank Key。 |
+| `RERANK_TOP_N` | 新增；默认沿用最终 `RETRIEVAL_K`。调用级 `askOptions.k` 优先。 |
+| `RERANK_CANDIDATE_K` | 新增；必须不小于最终 `topN`，默认至少 20，用于扩大 Milvus 初召回。 |
+| `RERANK_TIMEOUT_MS` | 新增，默认 10000 ms。 |
+| `RERANK_FAILURE_MODE` | 新增，`fallback`（默认）或 `error`。 |
+
+任何日志、trace 或异常都不得包含 Authorization、Key 或完整服务响应。
+
+## 8. 全局不可破坏约束（Invariants）
+
+- 保持 `createEbookRag().ask(question, options)` 的调用方式，保持 `answer`、`route`、`sources`、`webSources`、`trace` 等现有字段兼容；只允许向后兼容新增字段。
+- 不改变 `question` 原始值；动态改写后的实际查询必须进入 Retriever 和启用时的 Rerank，并保留原始子问题及改写记录。
+- simple 分支、最大检索次数、最大联网次数、文档 ID 去重与 `bookId` 过滤持续有效。
+- Bocha 的“未配置即禁用”行为持续有效；运行时请求失败降级目前未实现，不能误写为已完成，也不在 P3-1～P3-4 中顺手扩 scope。
+- **严格知识库隔离**：EPUB 与生活笔记不可误混检；生活笔记必须在 ES 与 Milvus 查询阶段都强制 `userId` 和知识库范围，并对返回结果二次校验。
+- 不能跨 Elasticsearch/Milvus 比较原始分数并直接混排；P3-4 使用 rank-based fusion，Rerank 分数和向量分数分别保留。
+- **禁止数据库写操作**：P3 只做只读检索和 Mock 测试；不创建、删除、覆盖或重建 Collection/Index，不插入、更新、删除数据。
+- 不读取、回显或提交真实密钥。`.env` 不进 Git；新增配置只把变量名和无密钥占位符写入 `.env.example`。
+- 默认使用 Mock 测试，不批量触发付费模型、Rerank、联网或 LangSmith API。真实联调必须逐次取得明确授权，并区分 Mock 与真实结果。
+- LangSmith 开启时可能上传问题、prompt、上下文、输出和元数据；默认关闭，生活笔记另设默认关闭的作用域保护，不能仅靠“日志不打印原文”声称无外传。
+
+## 9. P3-1～P3-4 可执行任务清单
+
+任务严格按 `P3-1 → P3-2 → P3-3 → P3-4` 执行，一次只做一个任务。每轮完成后先报告并等待用户确认。
+
+### P3-1：引用快照与编号一致性（**代码完成：2026-10-12**）
+
+**完成状态**：本地引用修复代码已完成，20/20 Mock 测试通过；未调用真实模型，真实模型的引用纠正效果待验证。
+
+**实现结果**：
+
+- 生成前在最后一次文档去重、按分数排序和 `maxContextDocuments` 裁剪后冻结有序 `citationDocuments` 快照；`localContext` 与 API `sources` 均由该快照派生，确保 `[本地N]`、文档 ID 和返回数组下标一致。
+- 生成后解析所有 `[本地N]`，并以快照长度检查编号是否为规范的 `1..N`。例如只有 14 条来源时，`[本地15]` 会被识别为无效引用；实现不会把越界编号钳制或直接映射成 `[本地14]`。
+- 检测到无效引用时，默认最多使用同一份资料快照纠正生成 1 次。纠正提示要求只使用实际存在且资料中提供的引用，并禁止伪造或改变来源 ID；只有纠正输出本身不再含越界编号时才通过编号校验。
+- 若纠正调用失败、返回空答案或仍含无效编号，安全回退只移除最终答案中的无效引用标记，保留合法引用和真实来源，不新增来源、不修改来源 ID。
+- `trace.citationValidation` 向后兼容地记录状态、来源数量、初始/最终引用、初始无效引用、纠正次数、纠正调用是否失败以及最终移除的无效引用。
+- `sources` 可以包含未被答案引用的候选，但答案中的每个有效编号必须能映射到且只能映射到一个来源。
+- `answer`、`sources`、`webSources`、`trace` 等原有字段未删除或改名；只在 `trace` 中新增 `citationValidation`。
+- `contentSupportChecked` 固定记录为 `false`：当前只验证引用编号存在且可映射，不判断引用片段在语义上是否足以支持对应论述。语义充分性/忠实度仍属于 P5。
+
+**相对 P3-0 冻结设计的变更原因**：
+
+- 冻结稿原计划发现越界引用后直接清理且不重试；本轮实施指令改为优先有限次数纠正，因此实现默认最多纠正 1 次，并在失败后执行确定性清理。
+- 冻结稿同时规划了多轮网页全局编号；本轮确认的代码范围只涉及本地 `[本地N]`，因此未修改 `web-search.js`。该问题保留为已知未完成项，不计入本次 20 项 Mock 通过的能力范围。
+
+**修改文件**：
+
+- `backend/src/rag/ebook/agent-graph.js`：引用快照、生成后校验、有限纠正、安全清理与 trace。
+- `backend/src/rag/ebook/index.js`：从 `citationDocuments` 快照输出稳定 `sources`，暴露兼容的 `trace.citationValidation`。
+- `backend/test/agent-graph.test.js`：覆盖去重、重排、裁剪、合法引用保留、纠正失败清理及普通无引用答案。
+- `backend/test/ebook-rag.test.js`：覆盖 14 条来源却生成 `[本地15]`，以及纠正后 `[本地14]` 与 `sources[13]` 的映射。
+- `docs/specs/memorag-roadmap.md`：记录 P3-1 状态、实现、测试与限制。
+
+**测试与验收结果**：
+
+- 使用脚本化 Mock 确定性复现“14 条来源但答案含 `[本地15]`”，验证纠正后只保留可映射的 `[本地14]`，同时 trace 保留初始无效编号。
+- 覆盖重复 ID 保留高分、重新排序、裁剪后 prompt 编号与引用快照一致；合法 `[本地1]` / `[本地2]` 原样保留。
+- 覆盖纠正后仍含非法编号时的清理路径，以及无引用普通答案不触发额外纠正。
+- 测试命令显式关闭 `LANGSMITH_TRACING`、`LANGSMITH_TRACING_V2`、`LANGCHAIN_TRACING`、`LANGCHAIN_TRACING_V2`；4 个测试文件共 20 项，20 通过、0 失败。
+- 全部测试使用 Mock；未访问真实模型、Milvus、Bocha 或 LangSmith，未执行数据库写入。
+
+**已知限制与尚未完成事项**：
+
+- 真实模型是否能在一次纠正内稳定选择正确且受资料支持的引用尚未验证；不得把 Mock 通过表述为真实纠正效果已验收。
+- 当前校验只能证明编号合法并能映射到来源，不能证明引用内容足以支持论述；`contentSupportChecked: false` 明确记录该边界。
+- 多轮网页引用的累计编号问题仍未修复；在单独完成该项前，不能宣称网页引用已具备与本地引用相同的一致性保证。
+- 最终清理会改变 `answer` 字符串，且删除标记后局部语句可能不够自然；trace 会保留诊断证据，避免静默掩盖模型错误。
+
+**依赖关系**：仅依赖 P3-0 冻结；本地引用快照可作为 P3-2 和 P3-4 的前置基础。本轮结束后不自动开始 P3-2。
+
+### P3-2：EPUB Milvus 候选集接入可选 Qwen Rerank
+
+**目标**：保持 EPUB 只读 Milvus 检索，在功能开关启用时扩大候选集并使用 Qwen Rerank，失败时按配置回退。
+
+**冻结设计**：
+
+- 将旧 `DashScopeRerank` 的协议逻辑迁移到无顶层副作用的当前模块；不依赖旧 Hybrid 文件，也不要求引入 `@langchain/community`。
+- `askOptions.k` 仍表示最终每轮文档数并优先于 `RERANK_TOP_N`；Milvus 初召回使用不小于最终数量的 `RERANK_CANDIDATE_K`。
+- Rerank 输入严格限于同一 `bookId` 的 Milvus 返回结果；调用前与返回后都校验 `bookId`，不得跨书补候选。
+- Rerank 查询必须是 `retrieveNode` 实际使用的 `currentQuery`，包括合法的动态改写结果。
+- 保留原始 Milvus `score`，新增 `rerankScore`、原始/重排 rank 和状态元数据；不得用 Rerank 分数覆盖向量分数。
+- 多轮文档合并不得在 Rerank 后又按原始向量分数把顺序改回去。启用 Rerank 时使用 rank-based 分数 `1 / (60 + rank)` 聚合（`rank` 从 1 开始），同 ID 累加贡献；并列时依次按首次出现顺序、文档 ID 稳定排序。
+- 空候选不请求服务；超时、非 2xx、非法 JSON、缺失/重复/越界 index 均按 `RERANK_FAILURE_MODE` 处理。默认 `fallback` 返回原 Milvus 顺序并记录非敏感失败类别。
+- `ENABLE_RERANK=false` 时不构造请求，并维持现有无 Rerank 行为。
+
+**预计修改范围**：
+
+- 新增 `backend/src/rag/shared/dashscope-reranker.js`（最终命名可等价）：HTTP 协议、校验、超时和纯文档映射。
+- 新增或修改 EPUB retriever 包装层；`milvus-retriever.js` 继续负责纯 Milvus 召回。
+- `backend/src/config.js`、`.env.example`：加入第 7.3 节变量与验证、兼容优先级。
+- `backend/src/rag/ebook/index.js`、`agent-graph.js`：装配、实际查询透传、rank fusion 与 trace 元数据。
+- 新增 Rerank 单元测试，并更新 config、retriever、graph/API 测试和 `backend/README.md`。
+
+**依赖关系**：依赖 P3-1 的稳定引用快照；其共享 Reranker 是 P3-4 的前置。
+
+**验收条件**：
+
+1. Mock HTTP 断言 Bearer 鉴权和 `model/query/documents/top_n` 请求体正确，但测试输出不含 Key。
+2. 覆盖排序、`relevance_score` 保存、文档 ID/章节/正文/`bookId` 字段保留、同书过滤和改写查询透传。
+3. 覆盖空集合不调用、超时、HTTP 错误、非法响应、重复/越界 index；默认回退顺序正确且 trace 有失败类别。
+4. 覆盖多轮 Rerank 后使用冻结的 rank fusion，最终来源顺序与 P3-1 引用快照一致；原始 `score` 未被覆盖。
+5. 关闭开关时零 Rerank 调用、现有结果语义和 API 结构不变。
+6. 全部测试使用 Mock。只有用户另行提供有效凭证并明确授权后，才允许一次单查询、只读、小候选集的真实联调；未授权时必须标记“协议已 Mock，真实端点未验收”。
+
+**主要风险**：不同查询的原始 Rerank 分数不可直接比较，因此跨子问题只融合 rank，不融合原始分数；候选集过大会增加费用和延迟，默认关闭。
+
+### P3-3：LangSmith 显式追踪与隐私边界
+
+**目标**：在默认不外传的前提下，可选观察 `route/decompose/rewrite/retrieve/rerank/evaluate/web/generate`，并消除开发机 env 对 Mock 测试的隐式影响。
+
+**冻结设计**：
+
+- 应用显式解析追踪配置和别名，采用第 7.2 节的优先级；未启用时不创建 Client/Tracer，不产生外部请求。
+- 若代码直接 import `langsmith`，将它从传递依赖提升为 `package.json` 的直接依赖并锁定兼容版本。
+- 内容策略新增应用级 `MEMORAG_LANGSMITH_CONTENT_MODE=metadata_only|full`，默认 `metadata_only`。
+- `metadata_only` 使用显式 Client 的 inputs/outputs 隐藏能力，并只通过安全 metadata 记录：节点名、耗时、检索/联网次数、实际查询、文档 ID、Rerank 前后 rank、回退/错误类别。不得上传完整文档正文、拼接上下文、网页摘要、模型完整回答或凭证。
+- `full` 只在用户明确知情时用于非私人场景；README 必须说明会上传 prompt、问题、上下文和输出。
+- 为未来生活笔记预留独立 `ENABLE_NOTE_LANGSMITH_TRACING=false`。即使全局 `LANGSMITH_TRACING=true`，笔记作用域也用当前 SDK 支持的 `tracingEnabled: false` 阻断继承；只有显式开启才可发送，且默认仍为 `metadata_only`。
+- 追踪失败不得影响问答结果；但错误只能记录类型和 request/run id，不记录敏感 payload。
+
+**预计修改范围**：
+
+- `backend/src/config.js`、`.env.example`：追踪、内容模式和笔记独立开关。
+- 新增 `backend/src/observability/langsmith.js`：别名归一化、Client/Tracer 构建、关闭作用域和 metadata 白名单/脱敏。
+- `backend/src/rag/ebook/index.js`、`agent-graph.js` 及 P3-2 Rerank 包装层：节点名和安全 metadata。
+- `backend/package.json`、`package-lock.json`：如直接 import，则声明 `langsmith` 直接依赖。
+- 新增 observability/config 测试，更新 graph 回归和 `backend/README.md`。
+
+**依赖关系**：功能上依赖 P3-2，才能一次覆盖 Rerank span；P3-4 必须复用其生活笔记关闭作用域和脱敏策略。
+
+**验收条件**：
+
+1. 不设置开关或设置为 false 时，Mock Client 零调用；现有问答输出完全一致，完整 `npm test` 不等待外部网络。
+2. 单元测试证明 `LANGSMITH_*` 优先、`LANGCHAIN_API_KEY` / `LANGCHAIN_PROJECT` / 旧 tracing 名可回退，且测试后恢复 `process.env`，不污染其他 case。
+3. 使用内存假 Client 验证全部目标节点可见；metadata 包含 query、文档 ID、rank、次数和错误类别。
+4. 在 `metadata_only` payload 中断言不存在测试用敏感哨兵字符串、`content`、`localContext`、`webContext`、完整回答和任何 Key。
+5. 全局 tracing=true、笔记开关=false 时，模拟笔记作用域不产生 trace；显式开启后才产生脱敏 trace。
+6. 追踪 Client 抛错时问答仍成功，并有不含 payload 的本地诊断。
+7. 默认验收不访问 LangSmith 云端。只有明确授权后才做一次最小真实 trace，并把“本地配置通过”和“云端 trace 可见”分别报告。
+
+**主要风险**：LangGraph/LLM 自动 tracing 默认会捕获完整节点输入输出；仅添加 metadata 而不隐藏默认 inputs/outputs 仍会泄露正文，验收必须检查最终 payload。
+
+### P3-4：双知识库检索适配层与生活笔记混合检索
+
+**目标**：EPUB 与生活笔记共享检索契约但采用不同策略；生活笔记实现只读 ES + Milvus 召回、融合和可选 Rerank，不做 CRUD 或索引写入。
+
+**冻结设计**：
+
+- 通用接口：`search(query, { k, scope })`。`scope.knowledgeBase` 必填；EPUB 要求 `bookId`，生活笔记要求 `userId`。现有 `MilvusBookRetriever.search(query, { k, bookId })` 通过兼容适配器继续可用。
+- 标准文档至少包含：逻辑 `id`、`knowledgeBase`、可见正文、业务范围字段、原始 metadata、分离的 `scores`、各后端 `provenance`。EPUB 对外仍映射现有 `bookId/bookName/chapterNum/chunkIndex/score/content` 字段。
+- EPUB 继续使用 Milvus + 可选 P3-2 Rerank，不创建或声称存在 EPUB ES 索引。
+- 生活笔记并行调用 ES 关键词召回与 Milvus 向量召回；两个后端都必须在查询中强制 `knowledgeBase=life_notes` 和 `userId`，合并前再次丢弃范围不符结果。
+- ES 与 Milvus 必须携带相同的稳定逻辑笔记 ID。缺失逻辑 ID 的结果不得参与跨源合并，并记录诊断。
+- 同 ID 合并 provenance，不同 ID 保留；融合使用 RRF：每个来源贡献 `1 / (60 + rank)`（`rank` 从 1 开始），相加得到 `fusionScore`。不得比较 ES `_score` 与 Milvus cosine 原始值。
+- 若启用 Rerank，对融合后的候选调用 P3-2 共享模块，最终截取 `k`；否则按 `fusionScore` 稳定排序。原始 `_score`、cosine、fusion 和 rerank 分数分别保留。
+- 旧 query augmentation 不进入最小路径；当前 Agent 的实际 `currentQuery` 必须原样传到两个召回端和 Rerank。查询扩展待独立质量评测后再加默认关闭的开关。
+- 本任务不创建索引、不检查生产数据、不实现笔记 CRUD。无双索引测试数据时只完成 Mock 契约，状态标记“真实整合未验收”。
+
+**预计修改范围**：
+
+- 新增 `backend/src/rag/retrieval/`：标准文档、scope 校验、RRF、通用适配器契约。
+- 新增 `backend/src/rag/ebook/ebook-retriever.js`：包装当前 Milvus 与 P3-2 Rerank，同时保持旧调用兼容。
+- 新增 `backend/src/rag/notes/elasticsearch-retriever.js`、`milvus-retriever.js`、`hybrid-retriever.js` 和入口文件；均只读。
+- `backend/src/config.js`、`.env.example`：ES node/index、notes Milvus collection、召回数量等无密钥占位配置。
+- `backend/package.json`、锁文件：加入受控版本的 `@elastic/elasticsearch`；不为复用旧 Demo 而引入整个 `@langchain/community`。
+- `backend/src/rag/ebook/agent-graph.js` 或通用编排入口：只做适配器调用边界调整，不在本任务实现笔记 CRUD/API/UI。
+- 新增 retrieval adapter、scope、RRF、错误降级测试并更新 README。
+
+**依赖关系**：依赖 P3-1 引用契约、P3-2 共享 Reranker、P3-3 tracing 隔离/脱敏；完成后才具备 P4-B 入库设计的可靠读取边界。
+
+**验收条件**：
+
+1. Mock 覆盖同逻辑 ID 跨 ES/Milvus 合并、不同 ID 保留、provenance 和四类分数不丢失；RRF 数值和稳定 tie-break 可断言。
+2. 两个后端请求都包含 `userId` 和知识库过滤；注入越权返回时适配层会丢弃，覆盖跨用户、跨知识库和 EPUB/笔记误混场景。
+3. 覆盖 ES 空、Milvus 空、双空、单源异常、双源异常和 Rerank 异常；降级策略与错误诊断明确，不泄露连接信息或正文。
+4. 覆盖动态改写后的实际查询对 ES、Milvus 和 Rerank 三处完全一致。
+5. EPUB 的 `createEbookRag().ask()`、现有字段、`bookId` 过滤、P3-1 引用和 P3-2 排序回归全部通过。
+6. 生活笔记 Mock 调用默认不产生 LangSmith trace；显式启用时只出现 P3-3 允许的脱敏 metadata。
+7. 不执行任何真实 ES/Milvus 写操作。没有用户提供的只读测试环境与授权时，交付状态必须写明“Mock 已验收，真实索引存在性、mapping 和结果质量未验收”。
+
+**主要风险**：逻辑 ID 或租户字段在两个索引中不一致会造成误合并或越权；适配层必须 fail closed，不能用正文 hash 或后端局部 ID 猜测租户身份。
+
+## 10. 后续阶段（本阶段不实施）
 
 - **P4-A EPUB 入库**：上传/读取 EPUB，解析、分章分块、Embedding、批处理写入；重复导入策略、失败重试、元数据校验；按明确授权进行实际数据库写入测试。
-- **P4-B 生活笔记入库**：笔记 CRUD 与原始数据持久化（可用 PostgreSQL）；ES/Milvus 双索引同步、更新和删除一致性、统一 ID/用户隔离；编排错误补偿。
-- **P5 质量评测**：构建独立评测样本，检查引用真实性、召回质量、Rerank 前后对比、代词改写和联网回退；可复用已有 LangSmith/openevals 学习成果。
+- **P4-B 生活笔记入库**：确定 PostgreSQL 或其他原始数据真源，笔记 CRUD、ES/Milvus 双索引同步、更新/删除一致性、统一 ID、租户隔离和错误补偿。
+- **P5 质量评测**：独立评测集、引用真实性、召回质量、Rerank 前后对比、代词改写和联网回退；“引用支持结论”在此验收。
 - **P6 接口与体验**：Node HTTP API、SSE 流式输出、CLI、简单 React 页面、来源跳转、执行轨迹与部署。
 
-## 6. 每次 Codex 修改的工作协议
+## 11. 每次 Codex 修改协议
 
-1. 先阅读本规格和当前任务相关文件，报告它与代码现状的冲突。
-2. **只做当前一个 Px-y 任务**，不提前实现下一任务，不做与目标无关的大规模重构。
-3. 改动前说明拟修改文件、边界与验收测试；需要数据写入/真实服务调用时先征得用户同意。
-4. 实施最小可维护改动；不破坏对外接口、功能开关与安全回退。
-5. 新增测试并执行完整 `npm test`；报告命令、真实通过数、未验证项。
-6. 最后给出：改动摘要、文件列表、关键数据流、测试证据、遗留风险、下一步建议。
-7. 若规格与实际代码不一致，更新本文档并注明“变更原因”；重大行为或范围变化须先请求批准。
+1. 先阅读本规格和当前任务相关文件，报告规格与代码现状的冲突。
+2. **只做当前一个 Px-y 任务**，不提前实现下一任务，不做无关重构。
+3. 改动前说明拟修改文件、边界与验收测试；需要数据写入或任何真实外部服务调用时先征得用户明确同意。
+4. 实施最小可维护改动；不破坏对外接口、功能开关、隔离与安全回退。
+5. 新增 Mock 测试并执行完整 `npm test`；测试环境显式关闭外部 tracing，报告测试文件数、测试声明数、真实通过数和未验证项。
+6. 最后给出：改动摘要、文件列表、关键数据流、测试证据、遗留风险和下一步建议。
+7. 若规格与实际代码不一致，先更新本文并注明原因；重大行为或范围变化须先请求批准。
 
-## 7. 环境变量核对清单（不得写入具体密钥）
+## 12. P3-0 冻结结论与待用户确认
 
-| 分类      | 可能使用的变量                                               | 备注                                                         |
-| --------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| 模型      | `MODEL_NAME`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `EMBEDDINGS_MODEL_NAME` | 沿用现有实现                                                 |
-| Milvus    | `MILVUS_ADDRESS`                                             | 当前 `ebook_collection` 只读                                 |
-| 联网      | `BOCHA_API_KEY`                                              | 现有功能不变                                                 |
-| Rerank    | `RERANK_MODEL`, `RERANK_URL`, 可选 `RERANK_API_KEY`          | 由 Codex 核查旧 Demo 是否复用模型 API Key；不可臆造          |
-| LangSmith | `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` | 检查是否接受已有 `LANGCHAIN_API_KEY` / `LANGCHAIN_PROJECT` 别名 |
+P3-0 已完成以下设计决策：
 
-**密钥安全说明**：真实密钥截图或任何曾暴露的 Key 应及时轮换；不要把 `.env`、调试请求头、密钥日志提交到仓库或上传到第三方追踪平台。
+- `[本地15]` 的首要缺口是生成后没有引用合法性校验，而不是 CLI 截断；P3-1 已用 Mock 复现并完成本地引用修复。
+- P3-1 已建立本地引用快照；原计划中的多轮 `[网页N]` 编号重置问题尚未完成，继续作为已知限制保留。
+- 旧 Qwen Rerank 的 HTTP 形状可迁移，但实现本身不能直接复用；P3-2 默认关闭、专用 Key 优先、失败默认回退，并以 rank fusion 防止重排结果被向量分数覆盖。
+- 当前 LangSmith 新旧 env 命名兼容，但隐式启用会影响测试并可能上传内容；P3-3 改为显式配置、默认关闭、默认 `metadata_only`，生活笔记另行默认阻断。
+- 仓库没有可证明存在的生活笔记 ES/Milvus Schema 或当前实现；P3-4 只交付只读适配层和 Mock 验收，使用 RRF，严格双端租户过滤。
 
-## 8. 关键待确认问题
-
-- 旧版 ES、Milvus、Rerank Demo 当前在仓库中的真实位置与可安全复用程度。
-- `sources` / `localContext` 的编号及数量差异：是否仅为 CLI 输出限制，或存在引用映射错误。
-- Rerank 接口实际鉴权方式与超时设置（不能仅依据变量名猜测）。
-- LangSmith tracing 的内容可见范围，尤其是生活笔记类数据。
-- PostgreSQL 是否作为生活笔记的持久化来源，以及跨 ES/Milvus 同步一致性的实现边界（留在 P4）。
-
----
-
-### 下一次 Codex 指令（只做 P3-0，不写业务代码）
-
-请阅读 `docs/specs/memorag-roadmap.md`，仅执行 **P3-0：规格核对与设计冻结**。首先只读核查现有 `backend/src`、测试、旧 Demo、配置变量及 Git 状态，指出规格中哪些描述已得到代码证实、哪些待验证或需要修订。重点定位引用编号问题的数据流、确认 Rerank 的复用入口和 LangSmith 的兼容配置，然后把 P3-1～P3-4 拆成可独立提交和验收的任务清单。允许修改**本文档及文档任务清单**，但本轮**禁止修改业务代码、禁止访问真实密钥、禁止执行数据库写入或付费服务调用**。完成后报告文档变更、待确认点和建议首先执行的 P3-1 最小任务，等待我确认后再编码。
+P3-1 完成状态与限制见第 9 节；进入 P3-2 前须由用户另行确认，本轮不自动开始。

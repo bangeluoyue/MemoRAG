@@ -54,6 +54,7 @@ export function createEbookRag(options = {}) {
         k: askOptions.k ?? config.rag.retrievalK,
         maxRetrievals: askOptions.maxRetrievals ?? config.rag.maxRetrievals,
       }));
+      const citationDocuments = result.citationDocuments ?? result.documents ?? [];
 
       return {
         answer: result.generation,
@@ -61,9 +62,9 @@ export function createEbookRag(options = {}) {
           strategy: result.strategy,
           reason: result.routeReason,
         },
-        sources: (result.documents ?? []).map((document, index) => ({
-          reference: `本地${index + 1}`,
+        sources: citationDocuments.map((document, index) => ({
           ...document,
+          reference: `本地${index + 1}`,
         })),
         webSources: (result.webSources ?? []).map((source, index) => ({
           reference: `网页${index + 1}`,
@@ -82,6 +83,7 @@ export function createEbookRag(options = {}) {
           retrievalCount: result.retrievalCount ?? 0,
           webSearchCount: result.webSearchCount ?? 0,
           evaluation: result.evaluation,
+          citationValidation: result.citationValidation ?? null,
         },
       };
     },

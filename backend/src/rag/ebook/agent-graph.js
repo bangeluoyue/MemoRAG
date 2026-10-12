@@ -42,12 +42,14 @@ export const EbookRagState = Annotation.Root({
   retrievalCount: Annotation(),
   maxRetrievals: Annotation(),
   documents: Annotation(),
+  citationDocuments: Annotation(),
   localContext: Annotation(),
   webContext: Annotation(),
   webSources: Annotation(),
   webSearchCount: Annotation(),
   evaluation: Annotation(),
   generation: Annotation(),
+  citationValidation: Annotation(),
 });
 
 export function stringifyMessageContent(content) {
@@ -83,6 +85,56 @@ export function buildLocalContext(documents = []) {
     `相似度：${Number(document.score).toFixed(4)}`,
     `内容：${document.content}`,
   ].join("\n")).join("\n\n---------\n\n");
+}
+
+const LOCAL_CITATION_PATTERN = /\[本地([0-9]+)\]/g;
+
+function unique(values) {
+  return [...new Set(values)];
+}
+
+export function validateLocalCitations(answer, sourceCount) {
+  const maximum = Math.max(0, Math.floor(Number(sourceCount) || 0));
+  const references = [...String(answer ?? "").matchAll(LOCAL_CITATION_PATTERN)]
+    .map((match) => ({
+      label: match[0],
+      digits: match[1],
+      number: Number(match[1]),
+    }));
+  const isValidReference = (reference) => (
+    reference.number >= 1
+    && reference.number <= maximum
+    && String(reference.number) === reference.digits
+  );
+
+  const validReferences = unique(
+    references.filter(isValidReference).map((reference) => reference.label),
+  );
+  const invalidReferences = unique(
+    references.filter((reference) => !isValidReference(reference))
+      .map((reference) => reference.label),
+  );
+
+  return {
+    references: unique(references.map((reference) => reference.label)),
+    validReferences,
+    invalidReferences,
+    isValid: invalidReferences.length === 0,
+  };
+}
+
+export function removeInvalidLocalCitations(answer, sourceCount) {
+  const maximum = Math.max(0, Math.floor(Number(sourceCount) || 0));
+  return String(answer ?? "")
+    .replace(LOCAL_CITATION_PATTERN, (label, digits) => {
+      const number = Number(digits);
+      const isValid = number >= 1
+        && number <= maximum
+        && String(number) === digits;
+      return isValid ? label : "";
+    })
+    .replace(/[ \t]+(?=[，。！？；：,.!?;:])/g, "")
+    .trim();
 }
 
 function buildRewriteEvidence(retrievalHistory = []) {
@@ -212,12 +264,14 @@ export function createInitialState(question, options) {
     retrievalCount: 0,
     maxRetrievals: options.maxRetrievals,
     documents: [],
+    citationDocuments: [],
     localContext: "",
     webContext: "",
     webSources: [],
     webSearchCount: 0,
     evaluation: null,
     generation: "",
+    citationValidation: null,
   };
 }
 
@@ -228,7 +282,97 @@ export function createAgenticRagGraph({
   maxContextDocuments = 24,
   webSearch = null,
   maxWebSearches = 2,
+  maxCitationCorrectionAttempts = 1,
 }) {
+  const citationCorrectionLimit = Math.max(
+    0,
+    Math.floor(Number(maxCitationCorrectionAttempts) || 0),
+  );
+
+  const generateWithValidatedCitations = async ({
+    prompt,
+    question,
+    context,
+    citationDocuments,
+  }) => {
+    const localSourceCount = citationDocuments.length;
+    const initialMessage = await model.invoke(prompt);
+    const initialAnswer = stringifyMessageContent(initialMessage.content).trim();
+    const initialValidation = validateLocalCitations(initialAnswer, localSourceCount);
+    let answer = initialAnswer;
+    let validation = initialValidation;
+    let correctionAttempts = 0;
+    let correctionFailed = false;
+
+    while (!validation.isValid && correctionAttempts < citationCorrectionLimit) {
+      correctionAttempts += 1;
+      const allowedReferences = localSourceCount > 0
+        ? `[本地1] 至 [本地${localSourceCount}]`
+        : "没有可用本地来源，不得使用任何 [本地N]";
+
+      try {
+        const correctedMessage = await model.invoke(`
+你是中文问答答案的引用纠正器。下面的回答包含不存在的本地引用编号，请使用同一份资料重新生成完整回答。
+
+用户原始问题：${question}
+
+可用资料：
+${context || "（空）"}
+
+待纠正回答：
+${answer}
+
+检测到的无效本地引用：${validation.invalidReferences.join("、")}
+合法本地引用范围：${allowedReferences}
+
+要求：
+1. 只使用资料中真实存在的引用编号，不得虚构、补造或改变来源 ID。
+2. 保留仍然有效且确有使用的引用；没有资料支持时明确说明资料不足。
+3. 网页引用不属于本次编号校验范围，不要把本地引用改成网页引用来规避校验。
+4. 只输出纠正后的完整回答，不要解释纠正过程。
+        `);
+        const correctedAnswer = stringifyMessageContent(correctedMessage.content).trim();
+        if (!correctedAnswer) {
+          correctionFailed = true;
+          break;
+        }
+        answer = correctedAnswer;
+        validation = validateLocalCitations(answer, localSourceCount);
+      } catch {
+        correctionFailed = true;
+        break;
+      }
+    }
+
+    const removedInvalidReferences = validation.isValid
+      ? []
+      : validation.invalidReferences;
+    let status = initialValidation.isValid ? "valid" : "corrected";
+    if (!validation.isValid) {
+      answer = removeInvalidLocalCitations(answer, localSourceCount);
+      validation = validateLocalCitations(answer, localSourceCount);
+      status = "sanitized";
+    }
+
+    return {
+      generation: answer,
+      citationDocuments,
+      localContext: buildLocalContext(citationDocuments),
+      citationValidation: {
+        status,
+        localSourceCount,
+        initialReferences: initialValidation.references,
+        initialInvalidReferences: initialValidation.invalidReferences,
+        correctionAttempts,
+        correctionFailed,
+        removedInvalidReferences,
+        finalReferences: validation.references,
+        finalInvalidReferences: validation.invalidReferences,
+        contentSupportChecked: false,
+      },
+    };
+  };
+
   const routeQuestionNode = async (state) => {
     const router = model.withStructuredOutput(RouteSchema);
     const route = await router.invoke(`
@@ -246,12 +390,16 @@ export function createAgenticRagGraph({
   };
 
   const directAnswerNode = async (state) => {
-    const message = await model.invoke(`
+    return generateWithValidatedCitations({
+      prompt: `
 你是一个中文回答助手。请直接、简洁地回答问题。
 
 问题：${state.question}
-    `);
-    return { generation: stringifyMessageContent(message.content).trim() };
+      `,
+      question: state.question,
+      context: "",
+      citationDocuments: [],
+    });
   };
 
   const decomposeQuestionNode = async (state) => {
@@ -488,10 +636,19 @@ ${state.webContext || "（空）"}
   };
 
   const generateNode = async (state) => {
-    const context = [state.localContext, state.webContext]
+    const citationDocuments = (state.documents ?? []).map((document) => ({
+      ...document,
+    }));
+    const localContext = buildLocalContext(citationDocuments);
+    const context = [localContext, state.webContext]
       .filter(Boolean)
       .join("\n\n--- 联网补充 ---\n\n");
-    const message = await model.invoke(`
+    const allowedLocalReferences = citationDocuments.length > 0
+      ? `[本地1] 至 [本地${citationDocuments.length}]`
+      : "无本地引用";
+
+    return generateWithValidatedCitations({
+      prompt: `
 你是一个严谨的中文阅读问答助手。请优先依据给定资料回答，不要编造。
 
 资料：
@@ -502,11 +659,14 @@ ${context || "（空）"}
 要求：
 1. 回答完整问题，不要只回答某个子问题。
 2. 使用资料时以 [本地1]、[网页1] 这种标记注明依据。
-3. 若资料不足，明确说明无法确认以及缺少什么。
-4. 不要虚构引用或 URL。
-    `);
-
-    return { generation: stringifyMessageContent(message.content).trim() };
+3. 可用本地引用严格限定为：${allowedLocalReferences}。
+4. 若资料不足，明确说明无法确认以及缺少什么。
+5. 不要虚构引用或 URL。
+      `,
+      question: state.question,
+      context,
+      citationDocuments,
+    });
   };
 
   return new StateGraph(EbookRagState)
