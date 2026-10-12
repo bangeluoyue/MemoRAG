@@ -4,8 +4,10 @@
 node_modules/
 .pnpm-store/
 .npm/
+.npmrc
 .yarn/
 *.log
+logs/
 npm-debug.log*
 pnpm-debug.log*
 
@@ -18,6 +20,10 @@ pnpm-debug.log*
 !.env.*.example
 *.pem
 *.key
+*.p12
+*.pfx
+credentials.json
+service-account*.json
 
 # ==============================
 # Build / Cache / Test
@@ -34,11 +40,14 @@ coverage/
 # ==============================
 *.epub
 *.db
+*.db-*
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 uploads/
 volumes/
-data/private/
+**/data/private/
 
 # ==============================
 # Docker Local Data
