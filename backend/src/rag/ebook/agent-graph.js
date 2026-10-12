@@ -136,6 +136,24 @@ function unique(values) {
   return [...new Set(values)];
 }
 
+function loopBudget(value, minimum) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return minimum;
+  return Math.max(minimum, Math.ceil(number));
+}
+
+export function calculateAgenticRagRecursionLimit({
+  maxRetrievals,
+  maxWebSearches = 0,
+}) {
+  const retrievalBudget = loopBudget(maxRetrievals, 1);
+  const webSearchBudget = loopBudget(maxWebSearches, 0);
+
+  // complex 路径：route + decompose + 3 * retrieval + 2 * web
+  // + generate + LangGraph 的最终 END superstep。
+  return (3 * retrievalBudget) + (2 * webSearchBudget) + 4;
+}
+
 export function validateLocalCitations(answer, sourceCount) {
   const maximum = Math.max(0, Math.floor(Number(sourceCount) || 0));
   const references = [...String(answer ?? "").matchAll(LOCAL_CITATION_PATTERN)]

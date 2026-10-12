@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  calculateAgenticRagRecursionLimit,
   createAgenticRagGraph,
   createInitialState,
   mergeUniqueDocuments,
@@ -397,6 +398,84 @@ test("scenario F: web search, generation and web sources still work", async () =
   assert.equal(result.webSearchCount, 1);
   assert.equal(result.webSources[0].url, "https://example.com");
   assert.match(result.generation, /本地1/);
+});
+
+test("maximum legal retrieval and web path terminates with the derived limit", async () => {
+  const subQuestions = Array.from({ length: 8 }, (_, index) => `子问题 ${index + 1}`);
+  const keepOriginal = () => ({
+    needsRewrite: false,
+    rewrittenQuery: "",
+    resolvedEntities: [],
+    supportingDocumentIds: [],
+    hasConflictingEvidence: false,
+    reason: "证据始终不足，保留原查询",
+  });
+  const model = new ScriptedModel({
+    subQuestions,
+    rewriteResults: Array.from({ length: 7 }, keepOriginal),
+    evaluationActions: [
+      ...Array.from({ length: 7 }, () => "retrieve"),
+      "web_search",
+      "web_search",
+      "web_search",
+    ],
+    answer: "达到所有循环上限后生成回答 [本地1]",
+  });
+  let retrievalCalls = 0;
+  let webCalls = 0;
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search() {
+        retrievalCalls += 1;
+        return [document(`doc-${retrievalCalls}`, `不足的证据 ${retrievalCalls}`)];
+      },
+    },
+    bookName: "天龙八部",
+    webSearch: async () => {
+      webCalls += 1;
+      return { text: "联网证据仍不足", sources: [] };
+    },
+    maxWebSearches: 2,
+  });
+  const recursionLimit = calculateAgenticRagRecursionLimit({
+    maxRetrievals: 8,
+    maxWebSearches: 2,
+  });
+  const nodeSequence = [];
+  const retrievalProgress = [];
+  const webProgress = [];
+
+  for await (const update of await graph.stream(initialState(), {
+    streamMode: "updates",
+    recursionLimit,
+  })) {
+    const [nodeName] = Object.keys(update);
+    nodeSequence.push(nodeName);
+    if (update.retrieve) {
+      retrievalProgress.push([
+        update.retrieve.retrievalCount,
+        update.retrieve.nextSubIdx,
+      ]);
+    }
+    if (update.webSearch) webProgress.push(update.webSearch.webSearchCount);
+  }
+
+  const expectedSequence = ["routeQuestion", "decomposeQuestion"];
+  for (let index = 0; index < 8; index += 1) {
+    expectedSequence.push("rewriteSubQuestion", "retrieve", "evaluate");
+  }
+  expectedSequence.push("webSearch", "evaluate", "webSearch", "evaluate", "generate");
+
+  assert.equal(recursionLimit, 32);
+  assert.deepEqual(nodeSequence, expectedSequence);
+  assert.deepEqual(
+    retrievalProgress,
+    Array.from({ length: 8 }, (_, index) => [index + 1, index + 1]),
+  );
+  assert.deepEqual(webProgress, [1, 2]);
+  assert.equal(retrievalCalls, 8);
+  assert.equal(webCalls, 2);
 });
 
 test("mergeUniqueDocuments keeps the best score and applies the limit", () => {

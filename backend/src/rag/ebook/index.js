@@ -1,6 +1,10 @@
 import { ChatOpenAI, OpenAIEmbeddings } from "@langchain/openai";
 import { getConfig } from "../../config.js";
-import { createAgenticRagGraph, createInitialState } from "./agent-graph.js";
+import {
+  calculateAgenticRagRecursionLimit,
+  createAgenticRagGraph,
+  createInitialState,
+} from "./agent-graph.js";
 import { createMilvusClient, MilvusBookRetriever } from "./milvus-retriever.js";
 import { RerankingBookRetriever } from "./reranking-retriever.js";
 import { DashScopeReranker } from "../shared/dashscope-reranker.js";
@@ -67,13 +71,18 @@ export function createEbookRag(options = {}) {
     async ask(question, askOptions = {}) {
       const normalizedQuestion = String(question ?? "").trim();
       if (!normalizedQuestion) throw new Error("问题不能为空");
+      const maxRetrievals = askOptions.maxRetrievals ?? config.rag.maxRetrievals;
+      const recursionLimit = calculateAgenticRagRecursionLimit({
+        maxRetrievals,
+        maxWebSearches: webSearch ? config.webSearch.maxSearches : 0,
+      });
 
       const result = await graph.invoke(createInitialState(normalizedQuestion, {
         bookId: askOptions.bookId ?? config.milvus.bookId,
         k: askOptions.k
           ?? (rerankConfig.enabled ? rerankConfig.topN : config.rag.retrievalK),
-        maxRetrievals: askOptions.maxRetrievals ?? config.rag.maxRetrievals,
-      }));
+        maxRetrievals,
+      }), { recursionLimit });
       const citationDocuments = result.citationDocuments ?? result.documents ?? [];
 
       return {
@@ -118,6 +127,7 @@ export function createEbookRag(options = {}) {
 }
 
 export {
+  calculateAgenticRagRecursionLimit,
   createAgenticRagGraph,
   createInitialState,
   createMilvusClient,

@@ -2,7 +2,7 @@
 
 > 版本：v0.4（2026-10-12）
 >
-> 状态：**P3-0 已确认；P3-1 已完成；P3-2 代码完成，35/35 Mock 测试通过，真实 Qwen Rerank 端点与排序质量待验证。**
+> 状态：**P3-0 已确认；P3-1 已完成；P3-2 代码及 Graph recursion limit 修复完成，39/39 Mock 测试通过，真实环境修复效果与 Qwen Rerank 排序质量待验证。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -285,7 +285,7 @@ mergeUniqueDocuments
 
 **目标**：保持 EPUB 只读 Milvus 检索，在功能开关启用时扩大候选集并使用 Qwen Rerank，失败时按配置回退。
 
-**完成状态**：代码与 35/35 Mock 回归测试已完成；未调用真实模型、Rerank 或数据库，真实 Qwen Rerank 端点兼容性、延迟、费用和排序质量待验证。
+**完成状态**：代码及 Graph recursion limit 修复与 39/39 Mock 回归测试已完成；未调用真实模型、Rerank 或数据库，真实环境修复效果及 Qwen Rerank 端点兼容性、延迟、费用和排序质量待验证。
 
 **实现结果**：
 
@@ -296,6 +296,7 @@ mergeUniqueDocuments
 - 启用 Rerank 后，多轮同 ID 文档按 `1 / (60 + rank)` 累加贡献；并列时按首次出现顺序和文档 ID 稳定排序，不会再次按原始向量分数覆盖重排结果。最终排序仍由 P3-1 的引用快照统一生成 `localContext` 与 `sources`。
 - `fallback` 模式在超时、HTTP/网络错误或非法响应时保留原 Milvus 顺序，并仅在 `trace.retrievals[].rerank` 记录安全失败类别、候选/返回数量、文档 ID 和 rank 变化；`error` 模式直接抛出异常。异常和 trace 不包含 Key、Authorization、完整响应或文档正文。
 - 配置新增 `ENABLE_RERANK`、`RERANK_URL`、`RERANK_MODEL`、`RERANK_API_KEY`、`DASHSCOPE_API_KEY`、`RERANK_TOP_N`、`RERANK_CANDIDATE_K`、`RERANK_TIMEOUT_MS`、`RERANK_FAILURE_MODE`；Key 优先级为专用 Rerank Key、DashScope Key、旧 Demo 兼容的 OpenAI Key。
+- `createEbookRag().ask()` 根据本次调用的本地检索上限和是否可联网，使用图结构的严格上界 `3 * maxRetrievals + 2 * maxWebSearches + 4` 设置 LangGraph `recursionLimit`，覆盖最终 `END` superstep，而不是使用任意放大的固定值。
 
 **冻结设计**：
 
@@ -330,16 +331,26 @@ mergeUniqueDocuments
 5. 关闭开关时零 Rerank 调用、现有结果语义和 API 结构不变。
 6. 全部测试使用 Mock。只有用户另行提供有效凭证并明确授权后，才允许一次单查询、只读、小候选集的真实联调；未授权时必须标记“协议已 Mock，真实端点未验收”。
 
+**真实环境故障与修复记录（2026-10-12）**：
+
+- 用户真实环境分别以 `ENABLE_RERANK=true` 和 `ENABLE_RERANK=false` 执行同一问题，两者均触发默认 `Recursion limit of 25 reached`，因此故障不能归因于 Rerank。
+- 检查确认 `retrieveNode` 每轮都会同时递增 `retrievalCount` 和 `nextSubIdx`，`webSearchNode` 会递增 `webSearchCount`；`evaluateNode` 在对应上限耗尽后强制进入 `generate`。条件边没有无界回路。
+- 根因是合法复杂路径超过 LangGraph 默认 25 步：8 次本地检索需要执行 27 个节点，并需要第 28 个终止 superstep；若再执行 2 次联网，需执行 31 个节点并需要第 32 个终止 superstep。
+- Mock 在默认 25 步下精确复现了节点序列于第 8 次 `retrieve` 后报错；按公式设置 28/32 后，纯本地最大路径及“8 次本地检索 + 2 次联网”最大路径均正常进入 `generate` 并结束。
+- 与 P3-1 提交对比，循环边、索引和计数推进逻辑并非 P3-2 引入；Rerank 只可能通过证据排序影响评估器是否提早结束，不改变循环的理论上限。
+
 **测试与验收结果**：
 
-- 6 个测试文件共 35 项，35 通过、0 失败；运行时显式设置 `LANGSMITH_TRACING=false`、`LANGSMITH_TRACING_V2=false`、`LANGCHAIN_TRACING=false`、`LANGCHAIN_TRACING_V2=false`。
+- 6 个测试文件共 39 项，39 通过、0 失败；运行时显式设置 `LANGSMITH_TRACING=false`、`LANGSMITH_TRACING_V2=false`、`LANGCHAIN_TRACING=false`、`LANGCHAIN_TRACING_V2=false`。
 - Mock HTTP 已验证 Bearer 请求头和旧 Demo 的请求体形状；覆盖空候选、超时、非 2xx、非法 JSON、缺失/重复/越界 index，以及错误信息不泄露测试 Key 或响应正文。
 - 检索测试覆盖候选扩大、`askOptions.k` 优先、同书过滤、字段与原始 `score` 保留、默认回退及 `error` 模式；Graph/API 回归覆盖动态改写查询透传、RRF、多轮 trace、开关关闭时零 Rerank 调用和原有 `answer/sources/webSources/trace` 接口。
+- Graph 终止回归记录并断言最大合法节点序列、每轮子问题索引/检索次数、每轮联网次数；同时覆盖 Rerank 关闭、正常返回和异常回退时，证据持续不足且评估器重复要求检索仍能在第 8 次后生成并终止。
 - P3-1 的引用编号纠正、simple/complex 路由、检索轮次、可选联网与纯 Milvus 检索测试全部继续通过。全程未访问真实模型、Qwen Rerank、Milvus、Bocha 或 LangSmith，也未执行数据库写入。
 
 **已知限制与尚未完成事项**：
 
 - 真实 Qwen Rerank 端点的协议兼容性、模型可用性、延迟、费用、限流和排序质量尚未验收；当前只能表述为 Mock 协议与本地排序逻辑通过。
+- 用户报告的真实问题已由 Mock 精确复现并完成代码修复，但修复后的同一真实命令尚未重新执行；在用户确认前只能标记为“Mock 已验证，真实环境待复验”。
 - 默认关闭 Rerank；启用会把候选正文发送到配置的外部端点。部署方需自行确认数据授权、地域与服务条款，并优先使用专用 `RERANK_API_KEY`。
 - `fallback` 保障服务故障时可继续回答，但不能提供 Rerank 质量提升；跨查询只融合 rank，不比较不同查询间不可直接比较的原始 Rerank 分数。
 - P3-3 的显式 LangSmith 隔离和 P3-4 的 ES + Milvus 混合检索均未开始，其任务状态保持不变。

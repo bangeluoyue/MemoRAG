@@ -111,6 +111,46 @@ class RerankApiModel {
   }
 }
 
+class RepeatedRetrievalModel {
+  withStructuredOutput(schema) {
+    const keys = Object.keys(schema.shape);
+    if (keys.includes("strategy")) {
+      return { invoke: async () => ({ strategy: "complex", reason: "需要查书" }) };
+    }
+    if (keys.includes("sub_questions")) {
+      return {
+        invoke: async () => ({
+          sub_questions: Array.from({ length: 8 }, (_, index) => `子问题 ${index + 1}`),
+          reason: "测试最大合法检索路径",
+        }),
+      };
+    }
+    if (keys.includes("needsRewrite")) {
+      return {
+        invoke: async () => ({
+          needsRewrite: false,
+          rewrittenQuery: "",
+          resolvedEntities: [],
+          supportingDocumentIds: [],
+          hasConflictingEvidence: false,
+          reason: "继续使用原查询",
+        }),
+      };
+    }
+    return {
+      invoke: async () => ({
+        nextAction: "retrieve",
+        missing: ["证据始终不足"],
+        reason: "继续请求检索直到达到有界上限",
+      }),
+    };
+  }
+
+  async invoke() {
+    return { content: "达到检索上限后正常生成 [本地1]" };
+  }
+}
+
 function createTestConfig() {
   return {
     model: {
@@ -140,6 +180,52 @@ function createTestConfig() {
       maxSearches: 2,
     },
   };
+}
+
+function createRepeatedRetrievalRag(rerankMode) {
+  const config = createTestConfig();
+  config.rag.maxRetrievals = 8;
+  config.rerank = rerankMode === "disabled"
+    ? { enabled: false }
+    : {
+      enabled: true,
+      apiKey: "test-key",
+      url: "https://example.test/rerank",
+      model: "qwen3-rerank",
+      topN: 1,
+      candidateK: 3,
+      timeoutMs: 100,
+      failureMode: "fallback",
+    };
+  const counters = { retrievals: 0, reranks: 0 };
+  const rag = createEbookRag({
+    config,
+    model: new RepeatedRetrievalModel(),
+    embeddings: {},
+    milvusClient: {},
+    retriever: {
+      async search() {
+        counters.retrievals += 1;
+        return [{
+          id: `doc-${counters.retrievals}`,
+          score: 1 - (counters.retrievals * 0.01),
+          bookId: "1",
+          bookName: "天龙八部",
+          chapterNum: counters.retrievals,
+          chunkIndex: 0,
+          content: `第 ${counters.retrievals} 条不足证据`,
+        }];
+      },
+    },
+    reranker: {
+      async rerank() {
+        counters.reranks += 1;
+        if (rerankMode === "fallback") throw new Error("mock rerank failure");
+        return [{ index: 0, score: 0.9, rank: 1 }];
+      },
+    },
+  });
+  return { counters, rag };
 }
 
 test("createEbookRag().ask() keeps its API and exposes rewrite trace", async () => {
@@ -349,4 +435,43 @@ test("createEbookRag passes the dynamically rewritten query to Rerank", async ()
   assert.deepEqual(result.sources.map((source) => source.id), ["doc-1", "doc-2"]);
   assert.equal(result.trace.retrievals[1].query, "萧峰后来经历了什么？");
   assert.equal(result.trace.retrievals[1].rerank.status, "success");
+});
+
+test("maximum repeated retrieval path terminates when Rerank is disabled", async () => {
+  const { counters, rag } = createRepeatedRetrievalRag("disabled");
+
+  const result = await rag.ask("证据始终不足的测试问题");
+
+  assert.equal(result.answer, "达到检索上限后正常生成 [本地1]");
+  assert.equal(result.trace.retrievalCount, 8);
+  assert.equal(result.trace.retrievals.length, 8);
+  assert.equal(counters.retrievals, 8);
+  assert.equal(counters.reranks, 0);
+  assert.ok(result.trace.retrievals.every((retrieval) => retrieval.rerank === null));
+});
+
+test("maximum repeated retrieval path terminates after successful Rerank", async () => {
+  const { counters, rag } = createRepeatedRetrievalRag("success");
+
+  const result = await rag.ask("证据始终不足的测试问题");
+
+  assert.equal(result.trace.retrievalCount, 8);
+  assert.equal(counters.retrievals, 8);
+  assert.equal(counters.reranks, 8);
+  assert.ok(result.trace.retrievals.every(
+    (retrieval) => retrieval.rerank.status === "success",
+  ));
+});
+
+test("maximum repeated retrieval path terminates after Rerank fallback", async () => {
+  const { counters, rag } = createRepeatedRetrievalRag("fallback");
+
+  const result = await rag.ask("证据始终不足的测试问题");
+
+  assert.equal(result.trace.retrievalCount, 8);
+  assert.equal(counters.retrievals, 8);
+  assert.equal(counters.reranks, 8);
+  assert.ok(result.trace.retrievals.every(
+    (retrieval) => retrieval.rerank.status === "fallback",
+  ));
 });
