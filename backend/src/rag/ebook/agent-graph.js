@@ -61,6 +61,49 @@ export function stringifyMessageContent(content) {
 }
 
 export function mergeUniqueDocuments(existingDocs = [], newDocs = [], limit = 24) {
+  const hasRankFusion = [...existingDocs, ...newDocs]
+    .some((document) => Number.isFinite(Number(document.rankFusionScore)));
+
+  if (hasRankFusion) {
+    const documentsById = new Map();
+    let nextFirstSeen = existingDocs.reduce((maximum, document, index) => {
+      const firstSeen = Number(document.rankFusionFirstSeen);
+      return Math.max(maximum, Number.isFinite(firstSeen) ? firstSeen : index);
+    }, -1) + 1;
+
+    for (const [index, document] of [...existingDocs, ...newDocs].entries()) {
+      const id = String(document.id);
+      const previous = documentsById.get(id);
+      const contribution = Number(document.rankFusionScore);
+      const firstSeenValue = Number(document.rankFusionFirstSeen);
+      const firstSeen = Number.isFinite(firstSeenValue)
+        ? firstSeenValue
+        : (index < existingDocs.length ? index : nextFirstSeen++);
+
+      if (previous) {
+        documentsById.set(id, {
+          ...previous,
+          rankFusionScore: Number(previous.rankFusionScore)
+            + (Number.isFinite(contribution) ? contribution : 0),
+        });
+      } else {
+        documentsById.set(id, {
+          ...document,
+          rankFusionScore: Number.isFinite(contribution) ? contribution : 0,
+          rankFusionFirstSeen: firstSeen,
+        });
+      }
+    }
+
+    return [...documentsById.values()]
+      .sort((left, right) => (
+        Number(right.rankFusionScore) - Number(left.rankFusionScore)
+        || Number(left.rankFusionFirstSeen) - Number(right.rankFusionFirstSeen)
+        || String(left.id).localeCompare(String(right.id))
+      ))
+      .slice(0, limit);
+  }
+
   const documentsById = new Map();
 
   for (const document of [...existingDocs, ...newDocs]) {
@@ -528,10 +571,19 @@ ${formatRewriteEvidence(state.retrievalHistory)}
       throw new Error(`不存在可检索的子问题（下标 ${index}）`);
     }
 
-    const newDocuments = await retriever.search(query, {
-      k: state.k,
-      bookId: state.bookId,
-    });
+    const retrievalResult = typeof retriever.searchWithTrace === "function"
+      ? await retriever.searchWithTrace(query, {
+        k: state.k,
+        bookId: state.bookId,
+      })
+      : {
+        documents: await retriever.search(query, {
+          k: state.k,
+          bookId: state.bookId,
+        }),
+        rerank: null,
+      };
+    const newDocuments = retrievalResult.documents;
     const documents = mergeUniqueDocuments(
       state.documents,
       newDocuments,
@@ -544,6 +596,7 @@ ${formatRewriteEvidence(state.retrievalHistory)}
       query,
       rewriteApplied: Boolean(latestRewrite?.rewriteApplied),
       documentIds: newDocuments.map((document) => document.id),
+      rerank: retrievalResult.rerank,
       evidence: newDocuments.slice(0, 4).map((document) => ({
         documentId: document.id,
         chapterNum: document.chapterNum,

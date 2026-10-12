@@ -32,12 +32,34 @@ function booleanValue(env, name, fallback) {
   throw new Error(`${name} 必须是 true 或 false`);
 }
 
+function enumValue(env, name, allowedValues, fallback) {
+  const raw = env[name]?.trim().toLowerCase();
+  if (!raw) return fallback;
+  if (!allowedValues.includes(raw)) {
+    throw new Error(`${name} 必须是 ${allowedValues.join(" 或 ")}`);
+  }
+  return raw;
+}
+
 export function getConfig(env = process.env) {
   const bochaApiKey = env.BOCHA_API_KEY?.trim() || "";
+  const modelApiKey = required(env, "OPENAI_API_KEY");
+  const retrievalK = positiveInteger(env, "RETRIEVAL_K", 8);
+  const rerankEnabled = booleanValue(env, "ENABLE_RERANK", false);
+  const rerankTopN = positiveInteger(env, "RERANK_TOP_N", retrievalK);
+  const rerankCandidateK = Math.max(
+    rerankTopN,
+    positiveInteger(env, "RERANK_CANDIDATE_K", Math.max(20, rerankTopN)),
+  );
+  const rerankUrl = env.RERANK_URL?.trim() || "";
+
+  if (rerankEnabled && !rerankUrl) {
+    throw new Error("启用 Rerank 时缺少必要环境变量：RERANK_URL");
+  }
 
   return {
     model: {
-      apiKey: required(env, "OPENAI_API_KEY"),
+      apiKey: modelApiKey,
       baseUrl: env.OPENAI_BASE_URL?.trim() || undefined,
       chatModel: required(env, "MODEL_NAME"),
       embeddingModel: required(env, "EMBEDDINGS_MODEL_NAME"),
@@ -52,9 +74,26 @@ export function getConfig(env = process.env) {
     },
     rag: {
       bookName: env.BOOK_NAME?.trim() || "天龙八部",
-      retrievalK: positiveInteger(env, "RETRIEVAL_K", 8),
+      retrievalK,
       maxRetrievals: positiveInteger(env, "MAX_RETRIEVALS", 8),
       maxContextDocuments: positiveInteger(env, "MAX_CONTEXT_DOCUMENTS", 24),
+    },
+    rerank: {
+      enabled: rerankEnabled,
+      apiKey: env.RERANK_API_KEY?.trim()
+        || env.DASHSCOPE_API_KEY?.trim()
+        || modelApiKey,
+      url: rerankUrl,
+      model: env.RERANK_MODEL?.trim() || "qwen3-rerank",
+      topN: rerankTopN,
+      candidateK: rerankCandidateK,
+      timeoutMs: positiveInteger(env, "RERANK_TIMEOUT_MS", 10000),
+      failureMode: enumValue(
+        env,
+        "RERANK_FAILURE_MODE",
+        ["fallback", "error"],
+        "fallback",
+      ),
     },
     webSearch: {
       enabled: booleanValue(env, "ENABLE_WEB_SEARCH", false) && Boolean(bochaApiKey),

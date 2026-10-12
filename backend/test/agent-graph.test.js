@@ -409,6 +409,24 @@ test("mergeUniqueDocuments keeps the best score and applies the limit", () => {
   assert.deepEqual(documents.map((item) => item.id), ["a", "b"]);
 });
 
+test("mergeUniqueDocuments uses reciprocal rank fusion across reranked rounds", () => {
+  const documents = mergeUniqueDocuments(
+    [
+      { id: "a", score: 0.99, rankFusionScore: 1 / 61, rankFusionFirstSeen: 0 },
+      { id: "b", score: 0.40, rankFusionScore: 1 / 62, rankFusionFirstSeen: 1 },
+    ],
+    [
+      { id: "b", score: 0.10, rankFusionScore: 1 / 61 },
+      { id: "c", score: 1.00, rankFusionScore: 1 / 62 },
+    ],
+    3,
+  );
+
+  assert.deepEqual(documents.map((item) => item.id), ["b", "a", "c"]);
+  assert.equal(documents[0].score, 0.40);
+  assert.ok(documents[0].rankFusionScore > documents[1].rankFusionScore);
+});
+
 test("citation snapshot preserves valid references after dedupe, sorting and trimming", async () => {
   const model = new ScriptedModel({
     answer: "高分片段见 [本地1]，次高分片段见 [本地2]。",

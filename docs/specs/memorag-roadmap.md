@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v0.3（2026-10-12）
+> 版本：v0.4（2026-10-12）
 >
-> 状态：**P3-0 已确认；P3-1 代码完成，20/20 Mock 测试通过，真实模型引用纠正效果待验证。**
+> 状态：**P3-0 已确认；P3-1 已完成；P3-2 代码完成，35/35 Mock 测试通过，真实 Qwen Rerank 端点与排序质量待验证。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -281,9 +281,21 @@ mergeUniqueDocuments
 
 **依赖关系**：仅依赖 P3-0 冻结；本地引用快照可作为 P3-2 和 P3-4 的前置基础。本轮结束后不自动开始 P3-2。
 
-### P3-2：EPUB Milvus 候选集接入可选 Qwen Rerank
+### P3-2：EPUB Milvus 候选集接入可选 Qwen Rerank（**代码完成：2026-10-12**）
 
 **目标**：保持 EPUB 只读 Milvus 检索，在功能开关启用时扩大候选集并使用 Qwen Rerank，失败时按配置回退。
+
+**完成状态**：代码与 35/35 Mock 回归测试已完成；未调用真实模型、Rerank 或数据库，真实 Qwen Rerank 端点兼容性、延迟、费用和排序质量待验证。
+
+**实现结果**：
+
+- 将旧 Demo 的 Bearer 鉴权及 `model/query/documents/top_n` 请求协议迁移为无顶层副作用的 `DashScopeReranker`，未引入 `@langchain/community`；客户端支持超时，并校验 HTTP 状态、JSON、结果数组、结果数量、相关性分数及缺失/重复/越界 index。
+- 新增可选 `RerankingBookRetriever`：启用时使用不小于最终 `topN` 的候选数执行原 Milvus 只读检索，在调用 Rerank 前及映射返回结果后均校验 `bookId`；空的同书候选集不发请求。
+- `askOptions.k` 继续表示单轮最终文档数并优先于 `RERANK_TOP_N`；动态改写后的 `currentQuery` 原样传给 Milvus 与 Rerank。关闭 `ENABLE_RERANK` 时不构造请求，保持原检索与 API 行为。
+- 保留 Milvus `score` 和全部文档字段，向后兼容新增 `rerankScore`、`originalRank`、`rerankRank`、`rerankStatus`、`rankFusionScore` 元数据；Rerank 分数不会覆盖向量分数。
+- 启用 Rerank 后，多轮同 ID 文档按 `1 / (60 + rank)` 累加贡献；并列时按首次出现顺序和文档 ID 稳定排序，不会再次按原始向量分数覆盖重排结果。最终排序仍由 P3-1 的引用快照统一生成 `localContext` 与 `sources`。
+- `fallback` 模式在超时、HTTP/网络错误或非法响应时保留原 Milvus 顺序，并仅在 `trace.retrievals[].rerank` 记录安全失败类别、候选/返回数量、文档 ID 和 rank 变化；`error` 模式直接抛出异常。异常和 trace 不包含 Key、Authorization、完整响应或文档正文。
+- 配置新增 `ENABLE_RERANK`、`RERANK_URL`、`RERANK_MODEL`、`RERANK_API_KEY`、`DASHSCOPE_API_KEY`、`RERANK_TOP_N`、`RERANK_CANDIDATE_K`、`RERANK_TIMEOUT_MS`、`RERANK_FAILURE_MODE`；Key 优先级为专用 Rerank Key、DashScope Key、旧 Demo 兼容的 OpenAI Key。
 
 **冻结设计**：
 
@@ -296,13 +308,16 @@ mergeUniqueDocuments
 - 空候选不请求服务；超时、非 2xx、非法 JSON、缺失/重复/越界 index 均按 `RERANK_FAILURE_MODE` 处理。默认 `fallback` 返回原 Milvus 顺序并记录非敏感失败类别。
 - `ENABLE_RERANK=false` 时不构造请求，并维持现有无 Rerank 行为。
 
-**预计修改范围**：
+**修改文件**：
 
-- 新增 `backend/src/rag/shared/dashscope-reranker.js`（最终命名可等价）：HTTP 协议、校验、超时和纯文档映射。
-- 新增或修改 EPUB retriever 包装层；`milvus-retriever.js` 继续负责纯 Milvus 召回。
-- `backend/src/config.js`、`.env.example`：加入第 7.3 节变量与验证、兼容优先级。
-- `backend/src/rag/ebook/index.js`、`agent-graph.js`：装配、实际查询透传、rank fusion 与 trace 元数据。
-- 新增 Rerank 单元测试，并更新 config、retriever、graph/API 测试和 `backend/README.md`。
+- `backend/src/rag/shared/dashscope-reranker.js`：HTTP 协议、超时、响应校验与安全错误分类。
+- `backend/src/rag/ebook/reranking-retriever.js`：候选扩展、同书隔离、结果映射、失败策略与安全 trace。
+- `backend/src/config.js`、`backend/.env.example`：Rerank 配置、默认值、兼容优先级与校验。
+- `backend/src/rag/ebook/index.js`、`backend/src/rag/ebook/agent-graph.js`：可选装配、实际查询透传、RRF 合并与对外 trace。
+- `backend/test/dashscope-reranker.test.js`、`backend/test/reranking-retriever.test.js`：客户端及检索包装层单元测试。
+- `backend/test/config.test.js`、`backend/test/agent-graph.test.js`、`backend/test/ebook-rag.test.js`：配置、融合、动态改写、关闭开关、API 与 P3-1 回归测试。
+- `backend/README.md`：配置、数据流、失败模式及真实端点未验收说明。
+- `docs/specs/memorag-roadmap.md`：P3-2 状态、实现、测试和限制。
 
 **依赖关系**：依赖 P3-1 的稳定引用快照；其共享 Reranker 是 P3-4 的前置。
 
@@ -314,6 +329,20 @@ mergeUniqueDocuments
 4. 覆盖多轮 Rerank 后使用冻结的 rank fusion，最终来源顺序与 P3-1 引用快照一致；原始 `score` 未被覆盖。
 5. 关闭开关时零 Rerank 调用、现有结果语义和 API 结构不变。
 6. 全部测试使用 Mock。只有用户另行提供有效凭证并明确授权后，才允许一次单查询、只读、小候选集的真实联调；未授权时必须标记“协议已 Mock，真实端点未验收”。
+
+**测试与验收结果**：
+
+- 6 个测试文件共 35 项，35 通过、0 失败；运行时显式设置 `LANGSMITH_TRACING=false`、`LANGSMITH_TRACING_V2=false`、`LANGCHAIN_TRACING=false`、`LANGCHAIN_TRACING_V2=false`。
+- Mock HTTP 已验证 Bearer 请求头和旧 Demo 的请求体形状；覆盖空候选、超时、非 2xx、非法 JSON、缺失/重复/越界 index，以及错误信息不泄露测试 Key 或响应正文。
+- 检索测试覆盖候选扩大、`askOptions.k` 优先、同书过滤、字段与原始 `score` 保留、默认回退及 `error` 模式；Graph/API 回归覆盖动态改写查询透传、RRF、多轮 trace、开关关闭时零 Rerank 调用和原有 `answer/sources/webSources/trace` 接口。
+- P3-1 的引用编号纠正、simple/complex 路由、检索轮次、可选联网与纯 Milvus 检索测试全部继续通过。全程未访问真实模型、Qwen Rerank、Milvus、Bocha 或 LangSmith，也未执行数据库写入。
+
+**已知限制与尚未完成事项**：
+
+- 真实 Qwen Rerank 端点的协议兼容性、模型可用性、延迟、费用、限流和排序质量尚未验收；当前只能表述为 Mock 协议与本地排序逻辑通过。
+- 默认关闭 Rerank；启用会把候选正文发送到配置的外部端点。部署方需自行确认数据授权、地域与服务条款，并优先使用专用 `RERANK_API_KEY`。
+- `fallback` 保障服务故障时可继续回答，但不能提供 Rerank 质量提升；跨查询只融合 rank，不比较不同查询间不可直接比较的原始 Rerank 分数。
+- P3-3 的显式 LangSmith 隔离和 P3-4 的 ES + Milvus 混合检索均未开始，其任务状态保持不变。
 
 **主要风险**：不同查询的原始 Rerank 分数不可直接比较，因此跨子问题只融合 rank，不融合原始分数；候选集过大会增加费用和延迟，默认关闭。
 
