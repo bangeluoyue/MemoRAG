@@ -29,6 +29,13 @@ test("getConfig applies the EPUB RAG defaults", () => {
   assert.equal(config.langsmith.enabled, false);
   assert.equal(config.langsmith.contentMode, "metadata_only");
   assert.equal(config.langsmith.noteTracingEnabled, false);
+  assert.equal(config.notes.knowledgeBase, "life_notes");
+  assert.equal(config.notes.elasticsearch.node, "http://localhost:9200");
+  assert.equal(config.notes.elasticsearch.indexName, "life_notes");
+  assert.equal(config.notes.milvus.collectionName, "life_notes");
+  assert.equal(config.notes.keywordK, 20);
+  assert.equal(config.notes.vectorK, 20);
+  assert.equal(config.notes.rerankEnabled, false);
 });
 
 test("getConfig rejects an invalid embedding dimension", () => {
@@ -63,6 +70,29 @@ test("getConfig requires a URL only when Rerank is enabled", () => {
     /RERANK_URL/,
   );
   assert.doesNotThrow(() => getConfig({ ...validEnv, ENABLE_RERANK: "false" }));
+  assert.throws(
+    () => getConfig({ ...validEnv, ENABLE_NOTE_RERANK: "true" }),
+    /RERANK_URL/,
+  );
+});
+
+test("getConfig applies life-notes retrieval overrides", () => {
+  const config = getConfig({
+    ...validEnv,
+    ELASTICSEARCH_NODE: "https://elastic.example.test",
+    ELASTICSEARCH_NOTES_INDEX: "tenant_notes",
+    MILVUS_NOTES_COLLECTION: "tenant_notes_vectors",
+    NOTES_KEYWORD_K: "15",
+    NOTES_VECTOR_K: "25",
+    ENABLE_NOTE_RERANK: "true",
+    RERANK_URL: "https://rerank.example.test",
+  });
+  assert.equal(config.notes.elasticsearch.node, "https://elastic.example.test");
+  assert.equal(config.notes.elasticsearch.indexName, "tenant_notes");
+  assert.equal(config.notes.milvus.collectionName, "tenant_notes_vectors");
+  assert.equal(config.notes.keywordK, 15);
+  assert.equal(config.notes.vectorK, 25);
+  assert.equal(config.notes.rerankEnabled, true);
 });
 
 test("getConfig rejects an unsupported Rerank failure mode", () => {

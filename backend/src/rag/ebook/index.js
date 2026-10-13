@@ -8,6 +8,7 @@ import {
 } from "./agent-graph.js";
 import { createMilvusClient, MilvusBookRetriever } from "./milvus-retriever.js";
 import { RerankingBookRetriever } from "./reranking-retriever.js";
+import { EbookRetriever } from "./ebook-retriever.js";
 import { DashScopeReranker } from "../shared/dashscope-reranker.js";
 import { createBochaWebSearch } from "./web-search.js";
 
@@ -68,7 +69,7 @@ export function createEbookRag(options = {}) {
       timeoutMs: rerankConfig.timeoutMs,
     }))
     : null;
-  const retriever = rerankConfig.enabled
+  const rankedRetriever = rerankConfig.enabled
     ? new RerankingBookRetriever({
       retriever: baseRetriever,
       reranker,
@@ -77,6 +78,7 @@ export function createEbookRag(options = {}) {
       traceOperation: observability.traceOperation,
     })
     : baseRetriever;
+  const retriever = new EbookRetriever({ retriever: rankedRetriever });
   const webSearch = options.webSearch
     ?? (config.webSearch.enabled ? createBochaWebSearch(config.webSearch) : null);
   const graph = createAgenticRagGraph({
@@ -201,6 +203,7 @@ export {
   createLangSmithObservability,
   createMilvusClient,
   DashScopeReranker,
+  EbookRetriever,
   MilvusBookRetriever,
   RerankingBookRetriever,
 };

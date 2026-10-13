@@ -396,8 +396,11 @@ export function createLangSmithObservability(config = {}, options = {}) {
     };
   };
 
-  const traceOperation = async (name, operation, metadata = {}) => {
-    const enabled = scopeEnabled("ebook");
+  const traceOperation = async (name, operation, metadata = {}, options = {}) => {
+    const scope = typeof options === "string"
+      ? options
+      : String(options.scope ?? "ebook");
+    const enabled = scopeEnabled(scope);
     const wrapped = traceable(operation, {
       name,
       run_type: "tool",
@@ -407,7 +410,7 @@ export function createLangSmithObservability(config = {}, options = {}) {
         project_name: resolved.project,
         metadata: {
           ...pickSafeMetadata(metadata),
-          memorag_scope: "ebook",
+          memorag_scope: scope,
           memorag_content_mode: resolved.contentMode,
         },
       } : {}),

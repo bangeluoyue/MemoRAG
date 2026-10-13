@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v0.8（2026-10-13）
+> 版本：v0.9（2026-10-13）
 >
-> 状态：**P3-0、P3-1、P3-2、P3-2.1、P3-2.2、P3-2.3、P3-3 已完成；P3-3 的 68/68 Mock 回归通过，真实 LangSmith 云端链路可见性待授权验收。P3-2.2 的真实模型 coverage 判断与答案忠实度仍待验收；P3-4 未开始。**
+> 状态：**P3-0、P3-1、P3-2、P3-2.1、P3-2.2、P3-2.3、P3-3、P3-4 已完成；P3-4 的 85/85 Mock 回归通过，生活笔记真实 ES/Milvus 索引存在性、mapping、租户过滤和检索质量待授权验收。P3-3 真实 LangSmith 云端链路可见性、P3-2.2 真实模型 coverage 与答案忠实度仍待验收。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -741,6 +741,8 @@ flowchart LR
 
 **目标**：EPUB 与生活笔记共享检索契约但采用不同策略；生活笔记实现只读 ES + Milvus 召回、融合和可选 Rerank，不做 CRUD 或索引写入。
 
+**完成状态**：代码、配置模板、README 和 85/85 Mock 回归已完成，SDD 升级为 v0.9。本轮未连接真实 ES/Milvus、未调用付费模型、未创建/检查/写入索引或 Collection。因此状态为“Mock 已验收，真实整合未验收”。
+
 **冻结设计**：
 
 - 通用接口：`search(query, { k, scope })`。`scope.knowledgeBase` 必填；EPUB 要求 `bookId`，生活笔记要求 `userId`。现有 `MilvusBookRetriever.search(query, { k, bookId })` 通过兼容适配器继续可用。
@@ -762,6 +764,19 @@ flowchart LR
 - `backend/package.json`、锁文件：加入受控版本的 `@elastic/elasticsearch`；不为复用旧 Demo 而引入整个 `@langchain/community`。
 - `backend/src/rag/ebook/agent-graph.js` 或通用编排入口：只做适配器调用边界调整，不在本任务实现笔记 CRUD/API/UI。
 - 新增 retrieval adapter、scope、RRF、错误降级测试并更新 README。
+
+**实际实现**：
+
+- `backend/src/rag/retrieval/`：新增 `ebook|life_notes` scope 验证、固定四类分数的标准文档与 `1 / (60 + rank)` RRF；稳定 tie-break，缺 ID 和越权文档 fail closed。
+- `backend/src/rag/ebook/ebook-retriever.js`、`backend/src/rag/ebook/index.js`：在原 Milvus + 可选 Rerank 之外包装统一契约，兼容旧 `{ k, bookId }` 调用；未加入 EPUB ES 检索，未改动 Agent 图逻辑。
+- `backend/src/rag/notes/`：ES 关键词与 Milvus 向量并行召回，两端请求强制 `knowledgeBase=life_notes` + `userId`，返回后再二次校验；同 `note_id` 合并 provenance，支持共享 Qwen Rerank 与单源异常降级。双源异常与双源无命中使用不同安全状态。
+- `backend/src/observability/langsmith.js`：`traceOperation` 新增向后兼容的 scope 参数；notes 仍受 `ENABLE_NOTE_LANGSMITH_TRACING=false` 独立阻断，显式开启时复用 P3-3 的 `metadata_only` 白名单与凭证脱敏。
+- `backend/src/config.js`、`backend/.env.example`、`backend/package*.json`：新增 notes 只读节点/索引/Collection/召回数/独立 Rerank 开关，直接依赖锁定为 Node 20 兼容的 `@elastic/elasticsearch@8.19.2`，未引入 `@langchain/community`。
+- `backend/test/retrieval.test.js`、`backend/test/notes-retriever.test.js`、`backend/test/config.test.js`：覆盖统一/旧 EPUB 调用、RRF 精确值与稳定排序、租户/知识库越权丢弃、查询原样传递、四类分数、空结果/单双源异常/Rerank 回退和 notes tracing 隔离。
+
+**测试结果**：在 `backend/` 执行 `npm test`，由 `test-support/setup.js` 显式关闭 LangSmith 新旧环境开关；9 个测试文件、85 个测试声明全部通过。EPUB `createEbookRag().ask()`、引用快照、依赖改写、coverage、循环终止、Rerank 和 P3-3 LangSmith 回归保持通过。
+
+**已知限制**：仓库仍没有生活笔记真实 Schema/mapping/数据真源，默认字段名（`note_id/user_id/knowledge_base/content/vector`）只是适配契约，必须在只读授权环境中核对。本阶段不包含笔记 CRUD、双写一致性、HTTP 问答接口或前端；RRF/Rerank 的真实召回质量也尚未验收。逻辑 ID 或租户字段不一致时实现会丢弃结果，不用正文 hash 或后端局部 ID 猜测合并。
 
 **依赖关系**：依赖 P3-1 引用契约、P3-2 共享 Reranker、P3-3 tracing 隔离/脱敏；完成后才具备 P4-B 入库设计的可靠读取边界。
 
@@ -804,4 +819,4 @@ P3-0 已完成以下设计决策：
 - 当前 LangSmith 新旧 env 命名兼容；P3-3 已完成显式配置、默认关闭、默认 `metadata_only`、测试隔离和生活笔记默认阻断。真实 LangSmith 云端 trace 仍待授权验收。
 - 仓库没有可证明存在的生活笔记 ES/Milvus Schema 或当前实现；P3-4 只交付只读适配层和 Mock 验收，使用 RRF，严格双端租户过滤。
 
-P3-1、P3-2、P3-2.1、P3-2.2、P3-2.3、P3-3 完成状态与限制见第 9 节；P3-3 已完成显式追踪、隐私边界和 68/68 Mock 回归，真实 LangSmith 云端显示仍待授权验收。P3-2.2 仍等待真实模型的 coverage、依赖恢复和答案忠实度验收。本轮不开始 P3-4。
+P3-1、P3-2、P3-2.1、P3-2.2、P3-2.3、P3-3、P3-4 完成状态与限制见第 9 节；P3-4 已完成双知识库只读适配层、生活笔记 ES + Milvus RRF/可选 Rerank、严格 scope 隔离与 85/85 Mock 回归。真实生活笔记索引/mapping/检索质量、LangSmith 云端显示以及 P3-2.2 真实模型 coverage/答案忠实度仍待授权验收。

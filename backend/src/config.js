@@ -73,6 +73,7 @@ export function getConfig(env = process.env) {
   const modelApiKey = required(env, "OPENAI_API_KEY");
   const retrievalK = positiveInteger(env, "RETRIEVAL_K", 8);
   const rerankEnabled = booleanValue(env, "ENABLE_RERANK", false);
+  const noteRerankEnabled = booleanValue(env, "ENABLE_NOTE_RERANK", false);
   const rerankTopN = positiveInteger(env, "RERANK_TOP_N", retrievalK);
   const rerankCandidateK = Math.max(
     rerankTopN,
@@ -90,7 +91,7 @@ export function getConfig(env = process.env) {
     "LANGCHAIN_API_KEY",
   ]);
 
-  if (rerankEnabled && !rerankUrl) {
+  if ((rerankEnabled || noteRerankEnabled) && !rerankUrl) {
     throw new Error("启用 Rerank 时缺少必要环境变量：RERANK_URL");
   }
 
@@ -108,6 +109,19 @@ export function getConfig(env = process.env) {
       collectionName: env.MILVUS_BOOK_COLLECTION?.trim() || "ebook_collection",
       bookId: env.MILVUS_BOOK_ID?.trim() || "1",
       nprobe: positiveInteger(env, "MILVUS_NPROBE", 16),
+    },
+    notes: {
+      knowledgeBase: "life_notes",
+      elasticsearch: {
+        node: env.ELASTICSEARCH_NODE?.trim() || "http://localhost:9200",
+        indexName: env.ELASTICSEARCH_NOTES_INDEX?.trim() || "life_notes",
+      },
+      milvus: {
+        collectionName: env.MILVUS_NOTES_COLLECTION?.trim() || "life_notes",
+      },
+      keywordK: positiveInteger(env, "NOTES_KEYWORD_K", 20),
+      vectorK: positiveInteger(env, "NOTES_VECTOR_K", 20),
+      rerankEnabled: noteRerankEnabled,
     },
     rag: {
       bookName: env.BOOK_NAME?.trim() || "天龙八部",

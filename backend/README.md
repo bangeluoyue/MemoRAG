@@ -1,6 +1,6 @@
-# MemoRAG backend — EPUB Agentic RAG
+# MemoRAG backend — EPUB Agentic RAG 与只读生活笔记检索
 
-第一阶段只包含电子书只读检索、LangGraph Agent 和终端问答。它不会创建、删除、重建或写入 Milvus Collection。
+当前包含 EPUB 只读检索、LangGraph Agent 和终端问答，以及生活笔记的只读 Elasticsearch + Milvus 混合检索适配层。它不会创建、删除、重建或写入任何索引/Collection，也尚未实现生活笔记 CRUD 或问答 API。
 
 ## 模块
 
@@ -11,6 +11,9 @@
 - `src/rag/ebook/nodes/`、`services/`：三态路由、受控检索、依赖改写、证据覆盖、生成、引用等节点与纯逻辑。
 - `src/rag/ebook/reranking-retriever.js`：可选扩大 Milvus 候选集，并使用 Qwen Rerank 重排。
 - `src/rag/shared/dashscope-reranker.js`：无副作用的 DashScope/Qwen Rerank HTTP 客户端。
+- `src/rag/retrieval/`：统一检索 scope、标准文档和 RRF 融合约定。
+- `src/rag/ebook/ebook-retriever.js`：EPUB Milvus/可选 Rerank 的通用接口兼容适配层。
+- `src/rag/notes/`：生活笔记 ES 关键词、Milvus 向量、RRF 和可选 Rerank 的只读检索实现。
 - `src/rag/ebook/index.js`：可被其他 Node.js 代码调用的 RAG 入口。
 - `src/cli/chat.js`：交互式或单次终端问答。
 - `src/cli/inspect-milvus.js`：只读显示 Collection Schema、行数、加载状态和索引。
@@ -38,6 +41,8 @@ npm run chat -- "雁门关事件的主谋是谁？"
 - `MILVUS_BOOK_ID`，默认 `1`
 - `EMBEDDING_DIMENSION`，现有集合为 `1024`
 
+生活笔记只读适配层使用 `ELASTICSEARCH_NODE`、`ELASTICSEARCH_NOTES_INDEX`、`MILVUS_NOTES_COLLECTION`、`NOTES_KEYWORD_K` 和 `NOTES_VECTOR_K`。这些默认值只是开发配置；仓库不声称真实索引、mapping 或 Collection Schema 已存在。
+
 `ENABLE_WEB_SEARCH` 默认为 `false`。只有显式启用且配置 `BOCHA_API_KEY` 后，信息充分性评估节点才可以选择联网搜索。
 
 Agent 内部路由分为 `direct`、`single_retrieval` 和 `multi_hop`。书中单一人物、事件或动机问题优先走单跳路径，不执行拆题和改写；首轮证据不足时最多按 `MAX_SINGLE_RETRIEVALS` 的预算补充本地检索（默认总计 2 次），也可在已启用联网时受 `MAX_WEB_SEARCHES` 限制回退。多跳路径默认最多生成 `MAX_SUB_QUESTIONS=4` 个必要计划项；非法计划最多按 `MAX_PLAN_REPAIR_ATTEMPTS=1` 修复一次，仍失败则回退到原始问题。依赖型改写只接受当前请求证据快照内的连续序号；改写失败时使用原始完整问题安全回退，内部“第 N 项人物”等占位表达不会进入 Retriever。
@@ -49,6 +54,14 @@ coverage 是受限证据快照上的相关性/充分性判断，不是完整的�
 `ENABLE_RERANK` 默认为 `false`，关闭时保持原有 Milvus 检索行为且不会发起 Rerank 请求。启用时必须配置 `RERANK_URL`；Key 按 `RERANK_API_KEY`、`DASHSCOPE_API_KEY`、`OPENAI_API_KEY` 的顺序选择。`RERANK_CANDIDATE_K` 控制初始候选数，`RERANK_TOP_N` 控制默认最终文档数，而单次调用的 `askOptions.k` 优先。失败策略默认为 `RERANK_FAILURE_MODE=fallback`，会退回 Milvus 顺序；也可设为 `error` 直接抛错。
 
 Rerank 会保留原始 `score`，并在来源对象中附加 `rerankScore`、`originalRank`、`rerankRank`、`rerankStatus` 等元数据。多轮检索按 reciprocal rank fusion 合并；重排结果不会再被原始向量分数重新排序。当前测试只覆盖 Mock 协议和排序逻辑，尚未验证真实 Rerank 端点或排序质量。
+
+## 生活笔记混合检索
+
+统一调用契约为 `search(query, { k, scope })`。EPUB scope 为 `{ knowledgeBase: "ebook", bookId }`，生活笔记 scope 为 `{ knowledgeBase: "life_notes", userId }`。EPUB 继续只访问 Milvus；生活笔记并行访问 ES 和 Milvus，两个请求均强制 `knowledgeBase`/`userId` 过滤，返回后再二次校验。
+
+笔记结果依赖两个索引共享的稳定 `note_id`；缺少 ID 的结果会 fail closed。ES `_score` 和 Milvus cosine 不直接比较，而是使用 `1 / (60 + rank)` 的 RRF 融合。`scores.keyword/vector/fusion/rerank` 和 `provenance` 分开保留。`ENABLE_NOTE_RERANK=true` 时复用同一 Qwen Rerank 客户端；默认关闭。
+
+可通过 `createNotesRetriever()` 获取只读适配器；`searchWithTrace()` 还会返回单源异常降级、双源异常、过滤数量和 Rerank 状态等安全诊断。当前仅经 Mock 验收，尚未在真实 ES/Milvus 上验证 mapping、字段一致性、租户过滤和检索质量。
 
 ## LangSmith 链路追踪
 
@@ -67,7 +80,7 @@ MEMORAG_LANGSMITH_CONTENT_MODE=metadata_only
 
 默认的 `metadata_only` 不上传 Graph inputs/outputs、prompt、完整原始文档、联网正文或最终答案，只保留节点名、耗时、实际检索查询、文档 ID、coverage 状态、次数、Rerank 前后 rank 和错误类别等白名单元数据。任何模式都会递归屏蔽 API Key、Token、Authorization、Secret、Password 和 Credential 字段。
 
-`MEMORAG_LANGSMITH_CONTENT_MODE=full` 会上传问题、prompt、上下文和模型输出，只应在明确知情且没有私人内容的环境使用。生活笔记作用域另由 `ENABLE_NOTE_LANGSMITH_TRACING=false` 默认阻断，即使全局追踪已开启也不会上传；P3-3 尚未实现生活笔记业务本身。
+`MEMORAG_LANGSMITH_CONTENT_MODE=full` 会上传问题、prompt、上下文和模型输出，只应在明确知情且没有私人内容的环境使用。生活笔记作用域另由 `ENABLE_NOTE_LANGSMITH_TRACING=false` 默认阻断，即使全局追踪已开启也不会上传；只有显式授权后才会观察笔记检索 span，且仍应保持 `metadata_only`。
 
 LangSmith Client 失败不会改变问答结果；安全错误类别会出现在 `trace.langsmith.errors`，不会包含服务响应、payload 或凭证。Mock 测试通过预加载隔离文件强制关闭新旧追踪开关，不访问 LangSmith 云端。
 
