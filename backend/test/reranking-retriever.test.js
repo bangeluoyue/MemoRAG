@@ -65,6 +65,8 @@ test("RerankingBookRetriever expands recall, keeps the book filter and preserves
   assert.equal(result.documents[0].content, "片段 b");
   assert.equal(result.rerank.filteredOutCount, 1);
   assert.equal(result.rerank.status, "success");
+  assert.ok(result.retrieval.rerankDurationMs >= 0);
+  assert.ok(result.retrieval.totalDurationMs >= 0);
 });
 
 test("RerankingBookRetriever skips rerank when same-book candidates are empty", async () => {

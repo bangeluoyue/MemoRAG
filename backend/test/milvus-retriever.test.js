@@ -28,12 +28,16 @@ test("MilvusBookRetriever embeds, filters and maps search results", async () => 
     nprobe: 8,
   });
 
-  const documents = await retriever.search("问题", { k: 4, bookId: "1" });
+  const result = await retriever.searchWithTrace("问题", { k: 4, bookId: "1" });
+  const documents = result.documents;
   assert.equal(request.filter, 'book_id == "1"');
   assert.equal(request.limit, 4);
   assert.deepEqual(request.params, { nprobe: 8 });
   assert.equal(documents[0].chapterNum, 2);
   assert.equal(documents[0].content, "测试片段");
+  assert.ok(result.retrieval.embeddingDurationMs >= 0);
+  assert.ok(result.retrieval.vectorSearchDurationMs >= 0);
+  assert.ok(result.retrieval.totalDurationMs >= 0);
 });
 
 test("MilvusBookRetriever rejects embedding dimension mismatch", async () => {

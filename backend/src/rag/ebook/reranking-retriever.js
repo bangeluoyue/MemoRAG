@@ -27,12 +27,19 @@ export class RerankingBookRetriever {
   }
 
   async searchWithTrace(query, { k, bookId }) {
+    const startedAt = Date.now();
     const requestedTopN = Math.max(1, Math.floor(Number(k) || 1));
     const candidateK = Math.max(this.candidateK, requestedTopN);
-    const candidates = await this.retriever.search(query, {
-      k: candidateK,
-      bookId,
-    });
+    const baseResult = typeof this.retriever.searchWithTrace === "function"
+      ? await this.retriever.searchWithTrace(query, { k: candidateK, bookId })
+      : {
+        documents: await this.retriever.search(query, {
+          k: candidateK,
+          bookId,
+        }),
+        retrieval: {},
+      };
+    const candidates = baseResult.documents;
     const sameBookCandidates = candidates.filter((document) => (
       String(document.bookId) === String(bookId)
     ));
@@ -48,6 +55,11 @@ export class RerankingBookRetriever {
     if (!sameBookCandidates.length) {
       return {
         documents: [],
+        retrieval: {
+          ...(baseResult.retrieval ?? {}),
+          rerankDurationMs: 0,
+          totalDurationMs: Date.now() - startedAt,
+        },
         rerank: {
           ...baseTrace,
           status: "skipped_empty",
@@ -58,6 +70,7 @@ export class RerankingBookRetriever {
       };
     }
 
+    const rerankStartedAt = Date.now();
     try {
       const rankings = await this.reranker.rerank(query, sameBookCandidates, {
         topN: requestedTopN,
@@ -76,6 +89,11 @@ export class RerankingBookRetriever {
 
       return {
         documents,
+        retrieval: {
+          ...(baseResult.retrieval ?? {}),
+          rerankDurationMs: Date.now() - rerankStartedAt,
+          totalDurationMs: Date.now() - startedAt,
+        },
         rerank: {
           ...baseTrace,
           status: "success",
@@ -101,6 +119,11 @@ export class RerankingBookRetriever {
         }));
       return {
         documents,
+        retrieval: {
+          ...(baseResult.retrieval ?? {}),
+          rerankDurationMs: Date.now() - rerankStartedAt,
+          totalDurationMs: Date.now() - startedAt,
+        },
         rerank: {
           ...baseTrace,
           status: "fallback",

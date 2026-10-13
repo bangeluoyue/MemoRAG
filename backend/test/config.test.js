@@ -24,6 +24,7 @@ test("getConfig applies the EPUB RAG defaults", () => {
   assert.equal(config.rag.maxSubQuestions, 4);
   assert.equal(config.rag.maxPlanRepairAttempts, 1);
   assert.equal(config.rag.maxSingleRetrievals, 2);
+  assert.equal(config.rag.maxGapRecoveryAttempts, 1);
 });
 
 test("getConfig rejects an invalid embedding dimension", () => {
@@ -79,5 +80,9 @@ test("getConfig validates Agent planning and single-retrieval budgets", () => {
   assert.throws(
     () => getConfig({ ...validEnv, MAX_SINGLE_RETRIEVALS: "0" }),
     /MAX_SINGLE_RETRIEVALS/,
+  );
+  assert.throws(
+    () => getConfig({ ...validEnv, MAX_GAP_RECOVERY_ATTEMPTS: "2" }),
+    /MAX_GAP_RECOVERY_ATTEMPTS/,
   );
 });

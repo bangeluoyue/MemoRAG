@@ -83,7 +83,11 @@ class ScriptedModel {
         this.structuredCallCounts.evaluate += 1;
         this.evaluationPrompts.push(prompt);
         const action = this.evaluationActions.shift() ?? "generate";
-        return typeof action === "string"
+        const planCount = [...prompt.matchAll(/^\d+\..+$/gm)].length || 1;
+        const evidenceIndexes = [...prompt.matchAll(/\[证据(\d+)\]/g)]
+          .map((match) => Number(match[1]));
+        const selectedEvidence = evidenceIndexes.length ? [evidenceIndexes[0]] : [];
+        const actionObject = typeof action === "string"
           ? {
               isSufficient: action === "generate",
               nextAction: action,
@@ -93,6 +97,30 @@ class ScriptedModel {
               ...(action === "web_search" ? { web_query: "测试联网查询" } : {}),
             }
           : action;
+        if (actionObject.coverage) return actionObject;
+
+        const completedPlanCount = actionObject.isSufficient
+          ? planCount
+          : (this.mode === "multi_hop" && actionObject.nextAction === "retrieve"
+            ? Math.min(this.structuredCallCounts.evaluate, planCount)
+            : 0);
+        const coverage = Array.from({ length: planCount }, (_, index) => {
+          const supported = index < completedPlanCount && selectedEvidence.length > 0;
+          return {
+            planIndex: index + 1,
+            hasRelevantEvidence: supported,
+            isSufficient: supported,
+            hasConflictingEvidence: false,
+            supportingEvidenceIndexes: supported ? selectedEvidence : [],
+            missing: supported ? "" : `计划第 ${index + 1} 项仍缺证据`,
+            reason: supported ? "Mock 证据充分" : "Mock 证据不足",
+          };
+        });
+        return {
+          ...actionObject,
+          isSufficient: coverage.every((item) => item.isSufficient),
+          coverage,
+        };
       },
     };
   }
@@ -142,7 +170,7 @@ test("scenario A: dependent sub-question uses the rewritten query", async () => 
       needsRewrite: true,
       rewrittenQuery: "萧峰后来经历了什么？",
       resolvedEntities: ["萧峰"],
-      supportingDocumentIds: ["doc-q1"],
+      supportingEvidenceIndexes: [1],
       hasConflictingEvidence: false,
       reason: "前序证据确认误杀阿朱的人是萧峰",
     }],
@@ -159,6 +187,7 @@ test("scenario A: dependent sub-question uses the rewritten query", async () => 
       },
     },
     bookName: "天龙八部",
+    maxGapRecoveryAttempts: 0,
   });
 
   const result = await graph.invoke(initialState("误杀阿朱的人是谁？他后来经历了什么？"));
@@ -179,7 +208,7 @@ test("scenario B: independent sub-questions keep their original queries", async 
       needsRewrite: false,
       rewrittenQuery: "段誉是谁？",
       resolvedEntities: [],
-      supportingDocumentIds: [],
+      supportingEvidenceIndexes: [],
       hasConflictingEvidence: false,
       reason: "两个子问题互不依赖",
     }],
@@ -221,13 +250,15 @@ test("scenario C: missing prior evidence cannot produce an invented entity", asy
       },
     },
     bookName: "天龙八部",
+    maxGapRecoveryAttempts: 0,
   });
 
   const result = await graph.invoke(initialState());
 
-  assert.deepEqual(queries, ["某位身份无法确定的人物是谁？", "他后来去了哪里？"]);
+  assert.deepEqual(queries, ["某位身份无法确定的人物是谁？", "测试问题"]);
   assert.equal(model.rewritePrompts.length, 0);
-  assert.equal(result.rewriteHistory[1].status, "skipped_missing_dependency_evidence");
+  assert.equal(result.rewriteHistory[1].status, "dependency_fallback_original_question");
+  assert.equal(result.rewriteHistory[1].placeholderDetected, true);
 });
 
 test("scenario D: Q3 can use Q1 and Q2 evidence but never future evidence", async () => {
@@ -240,7 +271,7 @@ test("scenario D: Q3 can use Q1 and Q2 evidence but never future evidence", asyn
         needsRewrite: true,
         rewrittenQuery: "萧峰的父亲是谁？",
         resolvedEntities: ["萧峰"],
-        supportingDocumentIds: ["doc-q1"],
+        supportingEvidenceIndexes: [1],
         hasConflictingEvidence: false,
         reason: "Q1 证据确认人物是萧峰",
       },
@@ -248,7 +279,7 @@ test("scenario D: Q3 can use Q1 and Q2 evidence but never future evidence", asyn
         needsRewrite: true,
         rewrittenQuery: "萧远山后来去了哪里？",
         resolvedEntities: ["萧远山"],
-        supportingDocumentIds: ["doc-q2"],
+        supportingEvidenceIndexes: [2],
         hasConflictingEvidence: false,
         reason: "Q2 证据确认萧峰的父亲是萧远山",
       },
@@ -303,7 +334,7 @@ test("scenario E: rewrite model errors fall back to the original query", async (
 
   const result = await graph.invoke(initialState());
 
-  assert.deepEqual(queries, ["误杀阿朱的人是谁？", "他后来经历了什么？"]);
+  assert.deepEqual(queries, ["误杀阿朱的人是谁？", "测试问题"]);
   assert.equal(result.rewriteHistory[1].status, "fallback_model_error");
   assert.match(result.rewriteHistory[1].reason, /回退/);
 });
@@ -317,7 +348,7 @@ test("scenario E: ungrounded rewrite output is rejected", async () => {
       needsRewrite: true,
       rewrittenQuery: "慕容复后来经历了什么？",
       resolvedEntities: ["慕容复"],
-      supportingDocumentIds: ["doc-q1"],
+      supportingEvidenceIndexes: [1],
       hasConflictingEvidence: false,
       reason: "无依据的错误改写",
     }],
@@ -336,7 +367,7 @@ test("scenario E: ungrounded rewrite output is rejected", async () => {
 
   const result = await graph.invoke(initialState());
 
-  assert.equal(queries[1], "他后来经历了什么？");
+  assert.equal(queries[1], "测试问题");
   assert.equal(result.rewriteHistory[1].status, "fallback_invalid_rewrite");
 });
 
@@ -349,7 +380,7 @@ test("conflicting prior evidence forces the original query fallback", async () =
       needsRewrite: true,
       rewrittenQuery: "萧峰后来经历了什么？",
       resolvedEntities: ["萧峰"],
-      supportingDocumentIds: ["candidate-1"],
+      supportingEvidenceIndexes: [1],
       hasConflictingEvidence: true,
       reason: "前序结果同时出现多个候选人物",
     }],
@@ -371,7 +402,7 @@ test("conflicting prior evidence forces the original query fallback", async () =
 
   const result = await graph.invoke(initialState());
 
-  assert.equal(queries[1], "他后来经历了什么？");
+  assert.equal(queries[1], "测试问题");
   assert.equal(result.rewriteHistory[1].status, "fallback_invalid_rewrite");
   assert.match(result.rewriteHistory[1].reason, /冲突/);
 });
@@ -470,7 +501,7 @@ test("single retrieval may use bounded web fallback after local evidence is insu
 
   const result = await graph.invoke(initialState("小说改编信息是什么？"));
 
-  assert.equal(result.retrievalCount, 1);
+  assert.equal(result.retrievalCount, 2);
   assert.equal(webCalls, 1);
   assert.equal(result.webSearchCount, 1);
   assert.equal(result.evaluation.nextAction, "generate");
@@ -602,7 +633,7 @@ test("dependent rewrite that loses interrogative intent is rejected", async () =
       needsRewrite: true,
       rewrittenQuery: "萧峰离开了大理",
       resolvedEntities: ["萧峰"],
-      supportingDocumentIds: ["identity"],
+      supportingEvidenceIndexes: [1],
       hasConflictingEvidence: false,
       reason: "错误地改成事实断言",
     }],
@@ -621,7 +652,7 @@ test("dependent rewrite that loses interrogative intent is rejected", async () =
 
   const result = await graph.invoke(initialState("关键人物是谁，他为什么离开大理？"));
 
-  assert.equal(queries[1], "他为什么离开大理？");
+  assert.equal(queries[1], "关键人物是谁，他为什么离开大理？");
   assert.equal(result.rewriteHistory[1].status, "fallback_invalid_rewrite");
   assert.match(result.rewriteHistory[1].reason, /疑问意图/);
 });
@@ -650,6 +681,411 @@ test("evaluation context is capped at six documents and 600 characters each", as
   assert.doesNotMatch(evaluationPrompt, /文档ID：compact-7/);
   assert.doesNotMatch(evaluationPrompt, /不应进入评估提示/);
   assert.equal(buildCompactLocalContext(result.documents).match(/文档ID：/g).length, 6);
+});
+
+test("coverage distinguishes retrieval, relevance and sufficiency", async () => {
+  const model = new ScriptedModel({
+    mode: "single_retrieval",
+    answer: "当前证据不足，无法确认。",
+    evaluationActions: [{
+      isSufficient: true,
+      coverage: [{
+        planIndex: 1,
+        hasRelevantEvidence: false,
+        isSufficient: true,
+        hasConflictingEvidence: false,
+        supportingEvidenceIndexes: [1],
+        missing: "缺少直接支持动机的原文",
+        reason: "编号合法，但内容只提到人物出场",
+      }],
+      nextAction: "generate",
+      missing: [],
+      nextPlanItemAddressesGap: false,
+      reason: "模型错误地宣称整体充分",
+    }],
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search() {
+        return [document("irrelevant", "阿朱在这一章出场。")];
+      },
+    },
+    bookName: "天龙八部",
+    maxGapRecoveryAttempts: 0,
+  });
+
+  const result = await graph.invoke(initialState("阿朱为何作出这个决定？"));
+
+  assert.equal(result.coverage[0].retrieved, true);
+  assert.equal(result.coverage[0].hasRelevantEvidence, false);
+  assert.equal(result.coverage[0].isSufficient, false);
+  assert.equal(result.coverage[0].status, "retrieved_not_supportive");
+  assert.equal(result.evaluation.modelIsSufficient, true);
+  assert.equal(result.evaluation.isSufficient, false);
+  assert.deepEqual(result.citationDocuments, []);
+  assert.match(model.invokePrompts[0], /缺少直接支持动机的原文/);
+});
+
+test("coverage keeps relevant but insufficient evidence unresolved", async () => {
+  const model = new ScriptedModel({
+    mode: "single_retrieval",
+    answer: "只能确认已发生该事件，具体原因尚无法确认。",
+    evaluationActions: [{
+      isSufficient: false,
+      coverage: [{
+        planIndex: 1,
+        hasRelevantEvidence: true,
+        isSufficient: false,
+        hasConflictingEvidence: false,
+        supportingEvidenceIndexes: [1],
+        missing: "事件原因",
+        reason: "片段相关但没有交代原因",
+      }],
+      nextAction: "generate",
+      missing: ["事件原因"],
+      nextPlanItemAddressesGap: false,
+      reason: "证据不充分",
+    }],
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: { async search() { return [document("related", "事件确实发生了。")]; } },
+    bookName: "天龙八部",
+    maxGapRecoveryAttempts: 0,
+  });
+
+  const result = await graph.invoke(initialState("事件为什么发生？"));
+
+  assert.equal(result.coverage[0].retrieved, true);
+  assert.equal(result.coverage[0].hasRelevantEvidence, true);
+  assert.equal(result.coverage[0].isSufficient, false);
+  assert.equal(result.coverage[0].status, "relevant_but_insufficient");
+  assert.deepEqual(result.citationDocuments, []);
+});
+
+test("invalid rewrite evidence index uses the safe full-question fallback", async () => {
+  const originalQuestion = "误杀阿朱的人是谁？他后来经历了什么？";
+  const queries = [];
+  const model = new ScriptedModel({
+    subQuestions: ["误杀阿朱的人是谁？", "第 1 项确认的人物后来经历了什么？"],
+    dependencies: [[], [1]],
+    rewriteResults: [{
+      needsRewrite: true,
+      rewrittenQuery: "萧峰后来经历了什么？",
+      resolvedEntities: ["萧峰"],
+      supportingEvidenceIndexes: [9],
+      hasConflictingEvidence: false,
+      reason: "引用了快照外序号",
+    }],
+    evaluationActions: ["retrieve", "generate"],
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search(query) {
+        queries.push(query);
+        return [document(`rewrite-${queries.length}`, "误杀阿朱的人是萧峰。")];
+      },
+    },
+    bookName: "天龙八部",
+  });
+
+  const result = await graph.invoke(initialState(originalQuestion));
+  const rewrite = result.rewriteHistory[1];
+
+  assert.deepEqual(queries, ["误杀阿朱的人是谁？", originalQuestion]);
+  assert.equal(rewrite.status, "fallback_invalid_rewrite");
+  assert.equal(rewrite.fallbackReason, "invalid_evidence_index");
+  assert.equal(rewrite.fallbackStrategy, "dependency_fallback_original_question");
+  assert.deepEqual(rewrite.attemptedEvidenceIndexes, [9]);
+  assert.deepEqual(rewrite.allowedEvidenceIndexes, [1]);
+  assert.equal(rewrite.placeholderDetected, true);
+  assert.doesNotMatch(queries[1], /第\s*1\s*项/);
+});
+
+test("targeted gap recovery runs at most once within existing budgets", async () => {
+  const queries = [];
+  const missingCoverage = {
+    isSufficient: false,
+    coverage: [{
+      planIndex: 1,
+      hasRelevantEvidence: false,
+      isSufficient: false,
+      hasConflictingEvidence: false,
+      supportingEvidenceIndexes: [],
+      missing: "关键原因",
+      reason: "当前召回不支持答案",
+    }],
+    nextAction: "retrieve",
+    missing: ["关键原因"],
+    nextPlanItemAddressesGap: false,
+    reason: "需要补充证据",
+  };
+  const model = new ScriptedModel({
+    mode: "single_retrieval",
+    answer: "关键原因尚未确认。",
+    evaluationActions: [missingCoverage, missingCoverage],
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search(query) {
+        queries.push(query);
+        return [];
+      },
+    },
+    bookName: "天龙八部",
+    maxSingleRetrievals: 3,
+    maxGapRecoveryAttempts: 1,
+  });
+
+  const result = await graph.invoke(initialState("这个事件为什么发生？"));
+
+  assert.equal(result.gapRecoveryCount, 1);
+  assert.equal(result.retrievalCount, 2);
+  assert.equal(queries.length, 2);
+  assert.match(queries[1], /补充检索重点：关键原因/);
+  assert.equal(result.evaluation.nextAction, "generate");
+});
+
+test("successful gap recovery selects only the supporting evidence", async () => {
+  const queries = [];
+  const model = new ScriptedModel({
+    mode: "single_retrieval",
+    answer: "恢复查询确认了原因 [本地1]。",
+    evaluationActions: [{
+      isSufficient: false,
+      coverage: [{
+        planIndex: 1,
+        hasRelevantEvidence: false,
+        isSufficient: false,
+        hasConflictingEvidence: false,
+        supportingEvidenceIndexes: [],
+        missing: "事件原因",
+        reason: "首轮是干扰资料",
+      }],
+      nextAction: "retrieve",
+      missing: ["事件原因"],
+      nextPlanItemAddressesGap: false,
+      reason: "需要定向恢复",
+    }, {
+      isSufficient: true,
+      coverage: [{
+        planIndex: 1,
+        hasRelevantEvidence: true,
+        isSufficient: true,
+        hasConflictingEvidence: false,
+        supportingEvidenceIndexes: [2],
+        missing: "",
+        reason: "第二轮证据直接解释原因",
+      }],
+      nextAction: "generate",
+      missing: [],
+      nextPlanItemAddressesGap: false,
+      reason: "恢复成功",
+    }],
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search(query) {
+        queries.push(query);
+        return queries.length === 1
+          ? [document("distractor", "另一个人物参与了无关事件。", 0.99)]
+          : [document("direct-support", "原文直接说明了该事件的原因。", 0.8)];
+      },
+    },
+    bookName: "天龙八部",
+    maxGapRecoveryAttempts: 1,
+  });
+
+  const result = await graph.invoke(initialState("这个事件为什么发生？"));
+
+  assert.equal(result.gapRecoveryCount, 1);
+  assert.equal(result.retrievalCount, 2);
+  assert.deepEqual(result.citationDocuments.map((item) => item.id), ["direct-support"]);
+  assert.doesNotMatch(model.invokePrompts[0], /distractor|无关事件/);
+  assert.match(model.invokePrompts[0], /direct-support/);
+});
+
+test("retrieval errors become unresolved coverage and still terminate", async () => {
+  const model = new ScriptedModel({
+    mode: "single_retrieval",
+    answer: "检索失败，当前无法确认。",
+    evaluationActions: [{
+      isSufficient: false,
+      coverage: [{
+        planIndex: 1,
+        hasRelevantEvidence: false,
+        isSufficient: false,
+        hasConflictingEvidence: false,
+        supportingEvidenceIndexes: [],
+        missing: "本地证据",
+        reason: "没有可评估的召回结果",
+      }],
+      nextAction: "generate",
+      missing: ["本地证据"],
+      nextPlanItemAddressesGap: false,
+      reason: "检索错误后安全结束",
+    }],
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: { async search() { throw new TypeError("mock failure"); } },
+    bookName: "天龙八部",
+    maxGapRecoveryAttempts: 0,
+  });
+
+  const result = await graph.invoke(initialState("需要检索的问题"));
+
+  assert.equal(result.retrievalCount, 1);
+  assert.equal(result.retrievalHistory[0].errorCategory, "TypeError");
+  assert.equal(result.coverage[0].status, "retrieval_error");
+  assert.equal(result.evaluation.nextAction, "generate");
+});
+
+test("evaluation evidence is balanced across retrieval rounds", async () => {
+  const model = new ScriptedModel({
+    subQuestions: ["事实一？", "事实二？"],
+    evaluationActions: [{
+      isSufficient: false,
+      coverage: [
+        {
+          planIndex: 1,
+          hasRelevantEvidence: true,
+          isSufficient: true,
+          hasConflictingEvidence: false,
+          supportingEvidenceIndexes: [1],
+          missing: "",
+          reason: "第一项充分",
+        },
+        {
+          planIndex: 2,
+          hasRelevantEvidence: false,
+          isSufficient: false,
+          hasConflictingEvidence: false,
+          supportingEvidenceIndexes: [],
+          missing: "事实二",
+          reason: "尚未检索",
+        },
+      ],
+      nextAction: "retrieve",
+      missing: ["事实二"],
+      nextPlanItemAddressesGap: true,
+      reason: "继续计划",
+    }, {
+      isSufficient: true,
+      coverage: [1, 2].map((planIndex) => ({
+        planIndex,
+        hasRelevantEvidence: true,
+        isSufficient: true,
+        hasConflictingEvidence: false,
+        supportingEvidenceIndexes: [planIndex],
+        missing: "",
+        reason: "两项均充分",
+      })),
+      nextAction: "generate",
+      missing: [],
+      nextPlanItemAddressesGap: false,
+      reason: "完成",
+    }],
+  });
+  let round = 0;
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search() {
+        round += 1;
+        return Array.from({ length: 4 }, (_, index) => (
+          document(`round-${round}-${index + 1}`, `第 ${round} 轮证据 ${index + 1}`)
+        ));
+      },
+    },
+    bookName: "天龙八部",
+  });
+
+  await graph.invoke(initialState("需要两个独立事实"));
+  const secondPrompt = model.evaluationPrompts[1];
+
+  assert.match(secondPrompt, /文档ID：round-1-1/);
+  assert.match(secondPrompt, /文档ID：round-2-1/);
+  assert.doesNotMatch(secondPrompt, /文档ID：round-1-4/);
+  assert.doesNotMatch(secondPrompt, /文档ID：round-2-4/);
+});
+
+test("supported unexecuted dependency can reuse earlier evidence for rewrite", async () => {
+  const queries = [];
+  const model = new ScriptedModel({
+    subQuestions: [
+      "同时确认关键人物及其身份？",
+      "关键人物是谁？",
+      "第 2 项确认的人物后来去了哪里？",
+    ],
+    dependencies: [[], [], [2]],
+    rewriteResults: [{
+      needsRewrite: true,
+      rewrittenQuery: "萧峰后来去了哪里？",
+      resolvedEntities: ["萧峰"],
+      supportingEvidenceIndexes: [1],
+      hasConflictingEvidence: false,
+      reason: "第一轮证据也覆盖第二项身份",
+    }],
+    evaluationActions: [{
+      isSufficient: false,
+      coverage: [
+        {
+          planIndex: 1,
+          hasRelevantEvidence: true,
+          isSufficient: true,
+          hasConflictingEvidence: false,
+          supportingEvidenceIndexes: [1],
+          missing: "",
+          reason: "第一项充分",
+        },
+        {
+          planIndex: 2,
+          hasRelevantEvidence: true,
+          isSufficient: true,
+          hasConflictingEvidence: false,
+          supportingEvidenceIndexes: [1],
+          missing: "",
+          reason: "同一证据也确认身份",
+        },
+        {
+          planIndex: 3,
+          hasRelevantEvidence: false,
+          isSufficient: false,
+          hasConflictingEvidence: false,
+          supportingEvidenceIndexes: [],
+          missing: "人物后续去向",
+          reason: "仍需依赖查询",
+        },
+      ],
+      nextAction: "retrieve",
+      missing: ["人物后续去向"],
+      nextPlanItemAddressesGap: true,
+      reason: "跳过已被覆盖的第二项",
+    }, "generate"],
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search(query) {
+        queries.push(query);
+        return query.includes("同时确认")
+          ? [document("shared-identity", "关键人物是萧峰。")]
+          : [document("later-place", "萧峰后来去了少林寺。")];
+      },
+    },
+    bookName: "天龙八部",
+  });
+
+  const result = await graph.invoke(initialState("关键人物是谁，他后来去了哪里？"));
+
+  assert.deepEqual(queries, ["同时确认关键人物及其身份？", "萧峰后来去了哪里？"]);
+  assert.equal(result.rewriteHistory[1].subQuestionIndex, 2);
+  assert.deepEqual(result.rewriteHistory[1].supportingDocumentIds, ["shared-identity"]);
 });
 
 test("scenario F: maximum retrieval count still terminates the graph", async () => {
@@ -715,7 +1151,7 @@ test("maximum legal retrieval and web path terminates with the derived limit", a
     needsRewrite: false,
     rewrittenQuery: "",
     resolvedEntities: [],
-    supportingDocumentIds: [],
+    supportingEvidenceIndexes: [],
     hasConflictingEvidence: false,
     reason: "证据始终不足，保留原查询",
   });
@@ -819,6 +1255,22 @@ test("mergeUniqueDocuments uses reciprocal rank fusion across reranked rounds", 
 test("citation snapshot preserves valid references after dedupe, sorting and trimming", async () => {
   const model = new ScriptedModel({
     answer: "高分片段见 [本地1]，次高分片段见 [本地2]。",
+    evaluationActions: [{
+      isSufficient: true,
+      coverage: [{
+        planIndex: 1,
+        hasRelevantEvidence: true,
+        isSufficient: true,
+        hasConflictingEvidence: false,
+        supportingEvidenceIndexes: [1, 2],
+        missing: "",
+        reason: "两条证据共同支持答案",
+      }],
+      nextAction: "generate",
+      missing: [],
+      nextPlanItemAddressesGap: false,
+      reason: "证据充分",
+    }],
   });
   const graph = createAgenticRagGraph({
     model,

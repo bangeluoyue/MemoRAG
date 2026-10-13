@@ -102,6 +102,12 @@ export function getConfig(env = process.env) {
         minimum: 1,
         maximum: 3,
       }),
+      maxGapRecoveryAttempts: boundedInteger(
+        env,
+        "MAX_GAP_RECOVERY_ATTEMPTS",
+        1,
+        { minimum: 0, maximum: 1 },
+      ),
     },
     rerank: {
       enabled: rerankEnabled,

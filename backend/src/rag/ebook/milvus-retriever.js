@@ -88,16 +88,35 @@ export class MilvusBookRetriever {
   }
 
   async search(query, { k = 5, bookId } = {}) {
-    const text = String(query ?? "").trim();
-    if (!text) return [];
+    const result = await this.searchWithTrace(query, { k, bookId });
+    return result.documents;
+  }
 
+  async searchWithTrace(query, { k = 5, bookId } = {}) {
+    const text = String(query ?? "").trim();
+    if (!text) {
+      return {
+        documents: [],
+        rerank: null,
+        retrieval: {
+          embeddingDurationMs: 0,
+          vectorSearchDurationMs: 0,
+          totalDurationMs: 0,
+        },
+      };
+    }
+
+    const startedAt = Date.now();
+    const embeddingStartedAt = Date.now();
     const vector = await this.embeddings.embedQuery(text);
+    const embeddingDurationMs = Date.now() - embeddingStartedAt;
     if (vector.length !== this.embeddingDimension) {
       throw new Error(
         `Embedding 维度不匹配：模型返回 ${vector.length}，配置为 ${this.embeddingDimension}`,
       );
     }
 
+    const vectorSearchStartedAt = Date.now();
     const response = await this.client.search({
       collection_name: this.collectionName,
       data: vector,
@@ -108,10 +127,11 @@ export class MilvusBookRetriever {
       metric_type: "COSINE",
       params: { nprobe: this.nprobe },
     });
+    const vectorSearchDurationMs = Date.now() - vectorSearchStartedAt;
 
     assertSuccess(response, `检索 Collection ${this.collectionName}`);
 
-    return (response.results ?? []).map((hit) => ({
+    const documents = (response.results ?? []).map((hit) => ({
       id: String(hit.id),
       score: Number(hit.score),
       bookId: String(hit.book_id),
@@ -120,5 +140,14 @@ export class MilvusBookRetriever {
       chunkIndex: Number(hit.index),
       content: String(hit.content ?? ""),
     }));
+    return {
+      documents,
+      rerank: null,
+      retrieval: {
+        embeddingDurationMs,
+        vectorSearchDurationMs,
+        totalDurationMs: Date.now() - startedAt,
+      },
+    };
   }
 }

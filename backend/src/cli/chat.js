@@ -25,6 +25,20 @@ function printResult(result) {
         console.log(`      → ${rewrite.rewrittenQuery}`);
       }
       console.log(`      ${rewrite.reason}`);
+      if (rewrite.fallbackReason) {
+        console.log(
+          `      回退：${rewrite.fallbackStrategy ?? "safe_fallback"}（${rewrite.fallbackReason}）`,
+        );
+      }
+    });
+  }
+
+  if (result.trace.coverage?.length) {
+    console.log("\n证据覆盖：");
+    result.trace.coverage.forEach((item) => {
+      console.log(
+        `  [${item.planIndex + 1}] 检索=${item.retrieved ? "是" : "否"}，相关=${item.hasRelevantEvidence ? "是" : "否"}，充分=${item.isSufficient ? "是" : "否"}，状态=${item.status}`,
+      );
     });
   }
 
@@ -56,6 +70,20 @@ function printResult(result) {
   console.log(
     `\n执行统计：本地检索 ${result.trace.retrievalCount} 次，联网搜索 ${result.trace.webSearchCount} 次${executionDetails}`,
   );
+  if (execution) {
+    console.log("节点耗时：");
+    Object.entries(execution.nodes).forEach(([name, node]) => {
+      console.log(`  ${name}: ${node.count} 次 / ${node.durationMs}ms`);
+    });
+    const stages = execution.retrievalStages ?? {};
+    console.log(
+      `检索阶段耗时：Embedding ${stages.embeddingDurationMs ?? 0}ms，向量检索 ${stages.vectorSearchDurationMs ?? 0}ms，Rerank ${stages.rerankDurationMs ?? 0}ms，检索总计 ${stages.totalDurationMs ?? 0}ms`,
+    );
+    const llm = execution.llmDurationMs ?? {};
+    console.log(
+      `生成阶段耗时：初次生成 ${llm.generate ?? 0}ms，引用纠正 ${llm.citationCorrection ?? 0}ms`,
+    );
+  }
 }
 
 export async function main() {

@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createEbookRag } from "../src/rag/ebook/index.js";
+import { validateLocalCitations } from "../src/rag/ebook/agent-graph.js";
 
 class ApiTestModel {
   constructor() {
     this.evaluations = ["retrieve", "generate"];
+    this.evaluationCount = 0;
   }
 
   withStructuredOutput(schema) {
@@ -39,21 +41,45 @@ class ApiTestModel {
           needsRewrite: true,
           rewrittenQuery: "萧峰后来经历了什么？",
           resolvedEntities: ["萧峰"],
-          supportingDocumentIds: ["doc-1"],
+          supportingEvidenceIndexes: [1],
           hasConflictingEvidence: false,
           reason: "前序原文确认人物为萧峰",
         }),
       };
     }
     return {
-      invoke: async () => ({
-        ...(this.evaluations[0] === "generate"
-          ? { isSufficient: true, missing: [] }
-          : { isSufficient: false, missing: ["下一项必要事实"] }),
-        nextAction: this.evaluations.shift(),
-        nextPlanItemAddressesGap: true,
-        reason: "测试评估",
-      }),
+      invoke: async () => {
+        this.evaluationCount += 1;
+        const action = this.evaluations.shift();
+        const firstOnly = this.evaluationCount === 1;
+        return {
+          isSufficient: !firstOnly,
+          coverage: [
+            {
+              planIndex: 1,
+              hasRelevantEvidence: true,
+              isSufficient: true,
+              hasConflictingEvidence: false,
+              supportingEvidenceIndexes: [1],
+              missing: "",
+              reason: "身份已有证据",
+            },
+            {
+              planIndex: 2,
+              hasRelevantEvidence: !firstOnly,
+              isSufficient: !firstOnly,
+              hasConflictingEvidence: false,
+              supportingEvidenceIndexes: firstOnly ? [] : [2],
+              missing: firstOnly ? "人物后续经历" : "",
+              reason: firstOnly ? "尚未检索后续经历" : "后续经历已有证据",
+            },
+          ],
+          nextAction: action,
+          missing: firstOnly ? ["下一项必要事实"] : [],
+          nextPlanItemAddressesGap: true,
+          reason: "测试评估",
+        };
+      },
     };
   }
 
@@ -66,8 +92,8 @@ class CitationCorrectionModel {
   constructor() {
     this.prompts = [];
     this.answers = [
-      "人物甲在第十四章完成了任务 [本地15]。",
-      "人物甲在第十四章完成了任务 [本地14]。",
+      "人物甲完成了任务 [本地7]。",
+      "人物甲完成了任务 [本地6]。",
     ];
   }
 
@@ -79,6 +105,15 @@ class CitationCorrectionModel {
     return {
       invoke: async () => ({
         isSufficient: true,
+        coverage: [{
+          planIndex: 1,
+          hasRelevantEvidence: true,
+          isSufficient: true,
+          hasConflictingEvidence: false,
+          supportingEvidenceIndexes: [1, 2, 3, 4, 5, 6],
+          missing: "",
+          reason: "证据充分",
+        }],
         nextAction: "generate",
         missing: [],
         nextPlanItemAddressesGap: false,
@@ -102,6 +137,15 @@ class RerankApiModel {
     return {
       invoke: async () => ({
         isSufficient: true,
+        coverage: [{
+          planIndex: 1,
+          hasRelevantEvidence: true,
+          isSufficient: true,
+          hasConflictingEvidence: false,
+          supportingEvidenceIndexes: [1],
+          missing: "",
+          reason: "证据充分",
+        }],
         nextAction: "generate",
         missing: [],
         nextPlanItemAddressesGap: false,
@@ -140,7 +184,7 @@ class RepeatedRetrievalModel {
           needsRewrite: false,
           rewrittenQuery: "",
           resolvedEntities: [],
-          supportingDocumentIds: [],
+          supportingEvidenceIndexes: [],
           hasConflictingEvidence: false,
           reason: "继续使用原查询",
         }),
@@ -149,6 +193,15 @@ class RepeatedRetrievalModel {
     return {
       invoke: async () => ({
         isSufficient: false,
+        coverage: Array.from({ length: 8 }, (_, index) => ({
+          planIndex: index + 1,
+          hasRelevantEvidence: false,
+          isSufficient: false,
+          hasConflictingEvidence: false,
+          supportingEvidenceIndexes: [],
+          missing: `必要事实 ${index + 1}`,
+          reason: "当前召回不能支持该项",
+        })),
         nextAction: "retrieve",
         missing: ["证据始终不足"],
         nextPlanItemAddressesGap: true,
@@ -158,7 +211,7 @@ class RepeatedRetrievalModel {
   }
 
   async invoke() {
-    return { content: "达到检索上限后正常生成 [本地1]" };
+    return { content: "达到检索上限，现有证据仍不足，无法确认。" };
   }
 }
 
@@ -176,6 +229,15 @@ class SingleHopMetricsModel {
     return {
       invoke: async () => ({
         isSufficient: true,
+        coverage: [{
+          planIndex: 1,
+          hasRelevantEvidence: true,
+          isSufficient: true,
+          hasConflictingEvidence: false,
+          supportingEvidenceIndexes: [1],
+          missing: "",
+          reason: "首轮证据充分",
+        }],
         nextAction: "generate",
         missing: [],
         nextPlanItemAddressesGap: false,
@@ -213,6 +275,7 @@ function createTestConfig() {
       maxSubQuestions: 4,
       maxPlanRepairAttempts: 1,
       maxSingleRetrievals: 2,
+      maxGapRecoveryAttempts: 1,
     },
     webSearch: {
       enabled: false,
@@ -359,6 +422,10 @@ test("motivating question uses one retrieval and reports exact execution metrics
     5,
   );
   assert.ok(result.trace.execution.totalDurationMs >= 0);
+  assert.ok(result.trace.execution.llmDurationMs.route >= 0);
+  assert.ok(result.trace.execution.llmDurationMs.evaluate >= 0);
+  assert.ok(result.trace.execution.llmDurationMs.generate >= 0);
+  assert.ok(result.trace.execution.retrievalStages.totalDurationMs >= 0);
   assert.equal(result.trace.execution.finalContextDocumentCount, 1);
   assert.doesNotMatch(
     JSON.stringify(result.trace.execution),
@@ -366,7 +433,13 @@ test("motivating question uses one retrieval and reports exact execution metrics
   );
 });
 
-test("createEbookRag corrects local reference 15 when only 14 sources exist", async () => {
+test("citation validator still rejects local reference 15 when 14 sources exist", () => {
+  const result = validateLocalCitations("错误引用 [本地15]", 14);
+  assert.equal(result.isValid, false);
+  assert.deepEqual(result.invalidReferences, ["[本地15]"]);
+});
+
+test("createEbookRag corrects an out-of-range reference against its evidence allowlist", async () => {
   const config = createTestConfig();
   config.rag.maxContextDocuments = 14;
   const model = new CitationCorrectionModel();
@@ -394,18 +467,18 @@ test("createEbookRag corrects local reference 15 when only 14 sources exist", as
 
   const result = await rag.ask("测试十四条来源");
 
-  assert.equal(result.sources.length, 14);
-  assert.equal(result.sources[13].reference, "本地14");
-  assert.equal(result.sources[13].id, "doc-14");
-  assert.equal(result.answer, "人物甲在第十四章完成了任务 [本地14]。");
-  assert.doesNotMatch(result.answer, /\[本地15\]/);
+  assert.equal(result.sources.length, 6);
+  assert.equal(result.sources[5].reference, "本地6");
+  assert.equal(result.sources[5].id, "doc-6");
+  assert.equal(result.answer, "人物甲完成了任务 [本地6]。");
+  assert.doesNotMatch(result.answer, /\[本地7\]/);
   assert.equal(model.prompts.length, 2);
-  assert.match(model.prompts[1], /\[本地14\][\s\S]*人物甲在这一章完成了任务/);
+  assert.match(model.prompts[1], /\[本地6\][\s\S]*第 6 条测试片段/);
   assert.equal(result.trace.citationValidation.status, "corrected");
-  assert.equal(result.trace.citationValidation.localSourceCount, 14);
+  assert.equal(result.trace.citationValidation.localSourceCount, 6);
   assert.deepEqual(
     result.trace.citationValidation.initialInvalidReferences,
-    ["[本地15]"],
+    ["[本地7]"],
   );
   assert.deepEqual(result.trace.citationValidation.finalInvalidReferences, []);
   assert.equal(result.trace.citationValidation.correctionAttempts, 1);
@@ -541,7 +614,7 @@ test("maximum repeated retrieval path terminates when Rerank is disabled", async
 
   const result = await rag.ask("证据始终不足的测试问题");
 
-  assert.equal(result.answer, "达到检索上限后正常生成 [本地1]");
+  assert.equal(result.answer, "达到检索上限，现有证据仍不足，无法确认。");
   assert.equal(result.trace.retrievalCount, 8);
   assert.equal(result.trace.retrievals.length, 8);
   assert.equal(counters.retrievals, 8);
