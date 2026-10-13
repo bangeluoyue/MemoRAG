@@ -5,7 +5,9 @@ import { createEbookRag } from "../rag/ebook/index.js";
 
 function printResult(result) {
   console.log(`\n回答：\n${result.answer}`);
-  console.log(`\n路由：${result.route.strategy}（${result.route.reason}）`);
+  console.log(
+    `\n路由：${result.route.strategy}/${result.route.mode ?? "legacy"}（${result.route.reason}）`,
+  );
 
   if (result.trace.subQuestions.length) {
     console.log("\n检索子问题：");
@@ -44,8 +46,15 @@ function printResult(result) {
     });
   }
 
+  const execution = result.trace.execution;
+  const nodeCalls = execution
+    ? Object.values(execution.nodes).reduce((total, node) => total + node.count, 0)
+    : 0;
+  const executionDetails = execution
+    ? `，节点 ${nodeCalls} 次，LLM ${execution.llmCallCount} 次，总耗时 ${execution.totalDurationMs}ms`
+    : "";
   console.log(
-    `\n执行统计：本地检索 ${result.trace.retrievalCount} 次，联网搜索 ${result.trace.webSearchCount} 次`,
+    `\n执行统计：本地检索 ${result.trace.retrievalCount} 次，联网搜索 ${result.trace.webSearchCount} 次${executionDetails}`,
   );
 }
 

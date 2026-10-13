@@ -1,47 +1,75 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildCompactLocalContext,
   calculateAgenticRagRecursionLimit,
   createAgenticRagGraph,
   createInitialState,
   mergeUniqueDocuments,
+  validateQuestionPlan,
 } from "../src/rag/ebook/agent-graph.js";
 
 class ScriptedModel {
   constructor({
-    strategy = "complex",
+    mode = "multi_hop",
+    strategy = null,
     subQuestions = ["萧峰是谁？"],
+    dependencies = [],
+    planResults = null,
     rewriteResults = [],
     evaluationActions = ["generate"],
     answer = "这是测试回答 [本地1]",
     answers = null,
   } = {}) {
-    this.strategy = strategy;
-    this.subQuestions = subQuestions;
+    this.mode = strategy === "simple" ? "direct" : mode;
+    this.planResults = planResults ? [...planResults] : [{
+      sub_questions: subQuestions.map((question, index) => ({
+        question,
+        purpose: `回答原问题所需的第 ${index + 1} 项事实`,
+        dependsOn: dependencies[index] ?? [],
+        introducedAssumptions: [],
+      })),
+      reason: "测试拆分",
+    }];
     this.rewriteResults = [...rewriteResults];
     this.evaluationActions = [...evaluationActions];
     this.answer = answer;
     this.answers = answers ? [...answers] : null;
     this.rewritePrompts = [];
+    this.evaluationPrompts = [];
     this.invokePrompts = [];
+    this.structuredCallCounts = {
+      route: 0,
+      decompose: 0,
+      rewrite: 0,
+      evaluate: 0,
+    };
   }
 
   withStructuredOutput(schema) {
     const keys = Object.keys(schema.shape);
-    if (keys.includes("strategy")) {
-      return { invoke: async () => ({ strategy: this.strategy, reason: "测试路由" }) };
+    if (keys.includes("mode")) {
+      return {
+        invoke: async () => {
+          this.structuredCallCounts.route += 1;
+          return { mode: this.mode, reason: "测试路由" };
+        },
+      };
     }
     if (keys.includes("sub_questions")) {
       return {
-        invoke: async () => ({
-          sub_questions: this.subQuestions,
-          reason: "测试拆分",
-        }),
+        invoke: async () => {
+          this.structuredCallCounts.decompose += 1;
+          const result = this.planResults.shift();
+          if (result instanceof Error) throw result;
+          return result;
+        },
       };
     }
     if (keys.includes("needsRewrite")) {
       return {
         invoke: async (prompt) => {
+          this.structuredCallCounts.rewrite += 1;
           this.rewritePrompts.push(prompt);
           const result = this.rewriteResults.shift();
           if (result instanceof Error) throw result;
@@ -51,12 +79,16 @@ class ScriptedModel {
     }
 
     return {
-      invoke: async () => {
+      invoke: async (prompt) => {
+        this.structuredCallCounts.evaluate += 1;
+        this.evaluationPrompts.push(prompt);
         const action = this.evaluationActions.shift() ?? "generate";
         return typeof action === "string"
           ? {
+              isSufficient: action === "generate",
               nextAction: action,
               missing: action === "generate" ? [] : ["测试缺失信息"],
+              nextPlanItemAddressesGap: action === "retrieve",
               reason: "测试评估",
               ...(action === "web_search" ? { web_query: "测试联网查询" } : {}),
             }
@@ -85,6 +117,14 @@ function document(id, content, score = 0.9) {
   };
 }
 
+function planItem(question, {
+  purpose = "回答原问题所需事实",
+  dependsOn = [],
+  introducedAssumptions = [],
+} = {}) {
+  return { question, purpose, dependsOn, introducedAssumptions };
+}
+
 function initialState(question = "测试问题") {
   return createInitialState(question, {
     bookId: "1",
@@ -97,6 +137,7 @@ test("scenario A: dependent sub-question uses the rewritten query", async () => 
   const queries = [];
   const model = new ScriptedModel({
     subQuestions: ["误杀阿朱的人是谁？", "他后来经历了什么？"],
+    dependencies: [[], [1]],
     rewriteResults: [{
       needsRewrite: true,
       rewrittenQuery: "萧峰后来经历了什么？",
@@ -159,13 +200,15 @@ test("scenario B: independent sub-questions keep their original queries", async 
 
   assert.deepEqual(queries, ["阿朱是谁？", "段誉是谁？"]);
   assert.equal(result.rewriteHistory[1].rewriteApplied, false);
-  assert.equal(result.rewriteHistory[1].status, "kept_original");
+  assert.equal(result.rewriteHistory[1].status, "skipped_independent");
+  assert.equal(model.rewritePrompts.length, 0);
 });
 
 test("scenario C: missing prior evidence cannot produce an invented entity", async () => {
   const queries = [];
   const model = new ScriptedModel({
     subQuestions: ["某位身份无法确定的人物是谁？", "他后来去了哪里？"],
+    dependencies: [[], [1]],
     rewriteResults: [new Error("rewriter should not run without evidence")],
     evaluationActions: ["retrieve", "generate"],
   });
@@ -184,13 +227,14 @@ test("scenario C: missing prior evidence cannot produce an invented entity", asy
 
   assert.deepEqual(queries, ["某位身份无法确定的人物是谁？", "他后来去了哪里？"]);
   assert.equal(model.rewritePrompts.length, 0);
-  assert.equal(result.rewriteHistory[1].status, "skipped_no_prior_evidence");
+  assert.equal(result.rewriteHistory[1].status, "skipped_missing_dependency_evidence");
 });
 
 test("scenario D: Q3 can use Q1 and Q2 evidence but never future evidence", async () => {
   const queries = [];
   const model = new ScriptedModel({
     subQuestions: ["误杀阿朱的人是谁？", "他的父亲是谁？", "他后来去了哪里？"],
+    dependencies: [[], [1], [1, 2]],
     rewriteResults: [
       {
         needsRewrite: true,
@@ -242,6 +286,7 @@ test("scenario E: rewrite model errors fall back to the original query", async (
   const queries = [];
   const model = new ScriptedModel({
     subQuestions: ["误杀阿朱的人是谁？", "他后来经历了什么？"],
+    dependencies: [[], [1]],
     rewriteResults: [new Error("mock timeout")],
     evaluationActions: ["retrieve", "generate"],
   });
@@ -267,6 +312,7 @@ test("scenario E: ungrounded rewrite output is rejected", async () => {
   const queries = [];
   const model = new ScriptedModel({
     subQuestions: ["误杀阿朱的人是谁？", "他后来经历了什么？"],
+    dependencies: [[], [1]],
     rewriteResults: [{
       needsRewrite: true,
       rewrittenQuery: "慕容复后来经历了什么？",
@@ -298,6 +344,7 @@ test("conflicting prior evidence forces the original query fallback", async () =
   const queries = [];
   const model = new ScriptedModel({
     subQuestions: ["关键人物是谁？", "他后来经历了什么？"],
+    dependencies: [[], [1]],
     rewriteResults: [{
       needsRewrite: true,
       rewrittenQuery: "萧峰后来经历了什么？",
@@ -341,6 +388,268 @@ test("scenario F: simple questions still bypass retrieval", async () => {
   assert.equal(result.strategy, "simple");
   assert.equal(result.retrievalCount, 0);
   assert.deepEqual(result.rewriteHistory, []);
+  assert.equal(result.execution.llmCalls.route, 1);
+  assert.equal(result.execution.llmCalls.generate, 1);
+  assert.equal(result.execution.localRetrievalCount, 0);
+});
+
+test("single retrieval handles the motivating question without decomposition or rewrite", async () => {
+  const queries = [];
+  const model = new ScriptedModel({
+    mode: "single_retrieval",
+    answer: "阿朱这样做是为了保护段正淳 [本地1]。",
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search(query) {
+        queries.push(query);
+        return [document("azhu", "阿朱决定假扮段正淳以保护他。")];
+      },
+    },
+    bookName: "天龙八部",
+  });
+
+  const result = await graph.invoke(initialState("阿朱为什么要假扮段正淳？"));
+
+  assert.deepEqual(queries, ["阿朱为什么要假扮段正淳？"]);
+  assert.equal(result.routeMode, "single_retrieval");
+  assert.equal(model.structuredCallCounts.decompose, 0);
+  assert.equal(model.structuredCallCounts.rewrite, 0);
+  assert.equal(result.execution.llmCalls.route, 1);
+  assert.equal(result.execution.llmCalls.evaluate, 1);
+  assert.equal(result.execution.llmCalls.generate, 1);
+  assert.equal(result.execution.localRetrievalCount, 1);
+});
+
+test("single retrieval allows only one deterministic supplemental local query", async () => {
+  const queries = [];
+  const model = new ScriptedModel({
+    mode: "single_retrieval",
+    evaluationActions: ["retrieve", "retrieve", "generate"],
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search(query) {
+        queries.push(query);
+        return [document(`single-${queries.length}`, `证据 ${queries.length}`)];
+      },
+    },
+    bookName: "天龙八部",
+    maxSingleRetrievals: 2,
+  });
+
+  const result = await graph.invoke(initialState("阿朱为什么要假扮段正淳？"));
+
+  assert.equal(queries.length, 2);
+  assert.equal(queries[0], "阿朱为什么要假扮段正淳？");
+  assert.match(queries[1], /^阿朱为什么要假扮段正淳？ 补充检索重点：/);
+  assert.equal(model.structuredCallCounts.decompose, 0);
+  assert.equal(model.structuredCallCounts.rewrite, 0);
+  assert.equal(result.evaluation.nextAction, "generate");
+  assert.equal(result.retrievalCount, 2);
+});
+
+test("single retrieval may use bounded web fallback after local evidence is insufficient", async () => {
+  let webCalls = 0;
+  const model = new ScriptedModel({
+    mode: "single_retrieval",
+    evaluationActions: ["web_search", "web_search"],
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: { async search() { return []; } },
+    bookName: "天龙八部",
+    webSearch: async () => {
+      webCalls += 1;
+      return { text: "联网补充仍不足", sources: [] };
+    },
+    maxWebSearches: 1,
+  });
+
+  const result = await graph.invoke(initialState("小说改编信息是什么？"));
+
+  assert.equal(result.retrievalCount, 1);
+  assert.equal(webCalls, 1);
+  assert.equal(result.webSearchCount, 1);
+  assert.equal(result.evaluation.nextAction, "generate");
+});
+
+test("question plan validation rejects excessive, duplicate, future-dependent and assumed items", () => {
+  assert.equal(validateQuestionPlan(
+    Array.from({ length: 5 }, (_, index) => planItem(`问题 ${index + 1}`)),
+    4,
+  ).valid, false);
+  assert.equal(validateQuestionPlan([
+    planItem("重复问题？"),
+    planItem("重复问题？"),
+  ], 4).valid, false);
+  assert.equal(validateQuestionPlan([
+    planItem("第一项？", { dependsOn: [2] }),
+    planItem("第二项？"),
+  ], 4).valid, false);
+  assert.equal(validateQuestionPlan([
+    planItem("带前提的问题？", { introducedAssumptions: ["某人已经死亡"] }),
+  ], 4).valid, false);
+});
+
+test("invalid multi-hop plan is repaired once before execution", async () => {
+  const invalidPlan = {
+    sub_questions: Array.from({ length: 5 }, (_, index) => planItem(`冗余问题 ${index + 1}`)),
+    reason: "过度拆题",
+  };
+  const repairedPlan = {
+    sub_questions: [
+      planItem("先确认人物是谁？"),
+      planItem("第 1 项人物后来去了哪里？", { dependsOn: [1] }),
+    ],
+    reason: "修复后的必要两跳",
+  };
+  const model = new ScriptedModel({
+    planResults: [invalidPlan, repairedPlan],
+    evaluationActions: [{
+      isSufficient: true,
+      nextAction: "retrieve",
+      missing: ["无需继续"],
+      nextPlanItemAddressesGap: true,
+      reason: "第一轮已经充分",
+    }],
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: { async search() { return [document("enough", "资料已经充分")]; } },
+    bookName: "天龙八部",
+  });
+
+  const result = await graph.invoke(initialState("一个真正的两跳问题"));
+
+  assert.equal(result.planValidation.status, "repaired");
+  assert.equal(result.planValidation.repairAttempts, 1);
+  assert.equal(model.structuredCallCounts.decompose, 2);
+  assert.equal(result.retrievalCount, 1);
+  assert.equal(result.execution.llmCalls.decompose, 2);
+});
+
+test("plan repair failure falls back to the original question without a third plan call", async () => {
+  const invalid = {
+    sub_questions: [
+      planItem("重复问题？"),
+      planItem("重复问题？"),
+    ],
+    reason: "重复计划",
+  };
+  const model = new ScriptedModel({
+    planResults: [invalid, invalid],
+  });
+  const queries = [];
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search(query) {
+        queries.push(query);
+        return [document("fallback", "回退证据")];
+      },
+    },
+    bookName: "天龙八部",
+  });
+
+  const result = await graph.invoke(initialState("原始复杂问题？"));
+
+  assert.equal(result.planValidation.status, "fallback_single");
+  assert.equal(result.planValidation.repairAttempts, 1);
+  assert.equal(model.structuredCallCounts.decompose, 2);
+  assert.deepEqual(queries, ["原始复杂问题？"]);
+  assert.deepEqual(result.subQuestions, ["原始复杂问题？"]);
+});
+
+test("sufficient evidence stops a multi-hop plan before remaining retrievals", async () => {
+  let retrievalCalls = 0;
+  const model = new ScriptedModel({
+    subQuestions: ["必要事实一？", "必要事实二？", "必要事实三？"],
+    evaluationActions: [{
+      isSufficient: true,
+      nextAction: "retrieve",
+      missing: ["模型错误地要求继续"],
+      nextPlanItemAddressesGap: true,
+      reason: "资料实际已经充分",
+    }],
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search() {
+        retrievalCalls += 1;
+        return [document("early-stop", "足以回答原始问题的资料")];
+      },
+    },
+    bookName: "天龙八部",
+  });
+
+  const result = await graph.invoke(initialState("需要判断是否提前结束的问题"));
+
+  assert.equal(retrievalCalls, 1);
+  assert.equal(result.evaluation.nextAction, "generate");
+  assert.equal(result.nextSubIdx, 1);
+});
+
+test("dependent rewrite that loses interrogative intent is rejected", async () => {
+  const queries = [];
+  const model = new ScriptedModel({
+    subQuestions: ["关键人物是谁？", "他为什么离开大理？"],
+    dependencies: [[], [1]],
+    rewriteResults: [{
+      needsRewrite: true,
+      rewrittenQuery: "萧峰离开了大理",
+      resolvedEntities: ["萧峰"],
+      supportingDocumentIds: ["identity"],
+      hasConflictingEvidence: false,
+      reason: "错误地改成事实断言",
+    }],
+    evaluationActions: ["retrieve", "generate"],
+  });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search(query) {
+        queries.push(query);
+        return [document("identity", "关键人物是萧峰。")];
+      },
+    },
+    bookName: "天龙八部",
+  });
+
+  const result = await graph.invoke(initialState("关键人物是谁，他为什么离开大理？"));
+
+  assert.equal(queries[1], "他为什么离开大理？");
+  assert.equal(result.rewriteHistory[1].status, "fallback_invalid_rewrite");
+  assert.match(result.rewriteHistory[1].reason, /疑问意图/);
+});
+
+test("evaluation context is capped at six documents and 600 characters each", async () => {
+  const longContent = `${"甲".repeat(600)}不应进入评估提示`;
+  const model = new ScriptedModel({ mode: "single_retrieval" });
+  const graph = createAgenticRagGraph({
+    model,
+    retriever: {
+      async search() {
+        return Array.from({ length: 14 }, (_, index) => (
+          document(`compact-${index + 1}`, longContent, 1 - index * 0.01)
+        ));
+      },
+    },
+    bookName: "天龙八部",
+    maxContextDocuments: 12,
+  });
+
+  const result = await graph.invoke(initialState("紧凑上下文测试"));
+  const evaluationPrompt = model.evaluationPrompts[0];
+
+  assert.equal(result.documents.length, 12);
+  assert.match(evaluationPrompt, /文档ID：compact-6/);
+  assert.doesNotMatch(evaluationPrompt, /文档ID：compact-7/);
+  assert.doesNotMatch(evaluationPrompt, /不应进入评估提示/);
+  assert.equal(buildCompactLocalContext(result.documents).match(/文档ID：/g).length, 6);
 });
 
 test("scenario F: maximum retrieval count still terminates the graph", async () => {
@@ -437,6 +746,7 @@ test("maximum legal retrieval and web path terminates with the derived limit", a
       return { text: "联网证据仍不足", sources: [] };
     },
     maxWebSearches: 2,
+    maxSubQuestions: 8,
   });
   const recursionLimit = calculateAgenticRagRecursionLimit({
     maxRetrievals: 8,

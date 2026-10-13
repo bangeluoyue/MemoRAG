@@ -10,6 +10,22 @@ import { RerankingBookRetriever } from "./reranking-retriever.js";
 import { DashScopeReranker } from "../shared/dashscope-reranker.js";
 import { createBochaWebSearch } from "./web-search.js";
 
+function buildExecutionTrace(execution, finalContextDocumentCount) {
+  const llmCalls = { ...(execution?.llmCalls ?? {}) };
+  return {
+    totalDurationMs: Math.max(0, Date.now() - Number(execution?.startedAtMs ?? Date.now())),
+    nodes: execution?.nodes ?? {},
+    llmCallCount: Object.values(llmCalls)
+      .reduce((total, count) => total + Number(count ?? 0), 0),
+    llmCalls,
+    localRetrievalCount: execution?.localRetrievalCount ?? 0,
+    rerankRequestCount: execution?.rerankRequestCount ?? 0,
+    rerankFallbackCount: execution?.rerankFallbackCount ?? 0,
+    webSearchCount: execution?.webSearchCount ?? 0,
+    finalContextDocumentCount,
+  };
+}
+
 export function createEbookRag(options = {}) {
   const config = options.config ?? getConfig();
   const model = options.model ?? new ChatOpenAI({
@@ -60,6 +76,9 @@ export function createEbookRag(options = {}) {
     retriever,
     bookName: config.rag.bookName,
     maxContextDocuments: config.rag.maxContextDocuments,
+    maxSubQuestions: config.rag.maxSubQuestions,
+    maxPlanRepairAttempts: config.rag.maxPlanRepairAttempts,
+    maxSingleRetrievals: config.rag.maxSingleRetrievals,
     webSearch,
     maxWebSearches: config.webSearch.maxSearches,
   });
@@ -89,6 +108,7 @@ export function createEbookRag(options = {}) {
         answer: result.generation,
         route: {
           strategy: result.strategy,
+          mode: result.routeMode,
           reason: result.routeReason,
         },
         sources: citationDocuments.map((document, index) => ({
@@ -101,6 +121,8 @@ export function createEbookRag(options = {}) {
         })),
         trace: {
           subQuestions: result.subQuestions ?? [],
+          plan: result.planItems ?? [],
+          planValidation: result.planValidation ?? null,
           rewriteHistory: result.rewriteHistory ?? [],
           retrievals: (result.retrievalHistory ?? []).map((retrieval) => ({
             subQuestionIndex: retrieval.subQuestionIndex,
@@ -114,6 +136,10 @@ export function createEbookRag(options = {}) {
           webSearchCount: result.webSearchCount ?? 0,
           evaluation: result.evaluation,
           citationValidation: result.citationValidation ?? null,
+          execution: buildExecutionTrace(
+            result.execution,
+            citationDocuments.length,
+          ),
         },
       };
     },

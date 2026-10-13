@@ -20,6 +20,10 @@ test("getConfig applies the EPUB RAG defaults", () => {
   assert.equal(config.rerank.topN, 8);
   assert.equal(config.rerank.candidateK, 20);
   assert.equal(config.rerank.failureMode, "fallback");
+  assert.equal(config.rag.maxContextDocuments, 12);
+  assert.equal(config.rag.maxSubQuestions, 4);
+  assert.equal(config.rag.maxPlanRepairAttempts, 1);
+  assert.equal(config.rag.maxSingleRetrievals, 2);
 });
 
 test("getConfig rejects an invalid embedding dimension", () => {
@@ -60,5 +64,20 @@ test("getConfig rejects an unsupported Rerank failure mode", () => {
   assert.throws(
     () => getConfig({ ...validEnv, RERANK_FAILURE_MODE: "silent" }),
     /RERANK_FAILURE_MODE/,
+  );
+});
+
+test("getConfig validates Agent planning and single-retrieval budgets", () => {
+  assert.throws(
+    () => getConfig({ ...validEnv, MAX_SUB_QUESTIONS: "9" }),
+    /MAX_SUB_QUESTIONS/,
+  );
+  assert.throws(
+    () => getConfig({ ...validEnv, MAX_PLAN_REPAIR_ATTEMPTS: "3" }),
+    /MAX_PLAN_REPAIR_ATTEMPTS/,
+  );
+  assert.throws(
+    () => getConfig({ ...validEnv, MAX_SINGLE_RETRIEVALS: "0" }),
+    /MAX_SINGLE_RETRIEVALS/,
   );
 });

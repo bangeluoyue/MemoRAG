@@ -9,13 +9,26 @@ class ApiTestModel {
 
   withStructuredOutput(schema) {
     const keys = Object.keys(schema.shape);
-    if (keys.includes("strategy")) {
-      return { invoke: async () => ({ strategy: "complex", reason: "需要查书" }) };
+    if (keys.includes("mode")) {
+      return { invoke: async () => ({ mode: "multi_hop", reason: "需要多跳查书" }) };
     }
     if (keys.includes("sub_questions")) {
       return {
         invoke: async () => ({
-          sub_questions: ["误杀阿朱的人是谁？", "他后来经历了什么？"],
+          sub_questions: [
+            {
+              question: "误杀阿朱的人是谁？",
+              purpose: "确认中间人物",
+              dependsOn: [],
+              introducedAssumptions: [],
+            },
+            {
+              question: "他后来经历了什么？",
+              purpose: "回答后续经历",
+              dependsOn: [1],
+              introducedAssumptions: [],
+            },
+          ],
           reason: "依赖问题",
         }),
       };
@@ -34,8 +47,11 @@ class ApiTestModel {
     }
     return {
       invoke: async () => ({
+        ...(this.evaluations[0] === "generate"
+          ? { isSufficient: true, missing: [] }
+          : { isSufficient: false, missing: ["下一项必要事实"] }),
         nextAction: this.evaluations.shift(),
-        missing: [],
+        nextPlanItemAddressesGap: true,
         reason: "测试评估",
       }),
     };
@@ -57,21 +73,15 @@ class CitationCorrectionModel {
 
   withStructuredOutput(schema) {
     const keys = Object.keys(schema.shape);
-    if (keys.includes("strategy")) {
-      return { invoke: async () => ({ strategy: "complex", reason: "需要查书" }) };
-    }
-    if (keys.includes("sub_questions")) {
-      return {
-        invoke: async () => ({
-          sub_questions: ["测试十四条来源"],
-          reason: "单次检索",
-        }),
-      };
+    if (keys.includes("mode")) {
+      return { invoke: async () => ({ mode: "single_retrieval", reason: "单跳查书" }) };
     }
     return {
       invoke: async () => ({
+        isSufficient: true,
         nextAction: "generate",
         missing: [],
+        nextPlanItemAddressesGap: false,
         reason: "资料充分",
       }),
     };
@@ -86,21 +96,15 @@ class CitationCorrectionModel {
 class RerankApiModel {
   withStructuredOutput(schema) {
     const keys = Object.keys(schema.shape);
-    if (keys.includes("strategy")) {
-      return { invoke: async () => ({ strategy: "complex", reason: "需要查书" }) };
-    }
-    if (keys.includes("sub_questions")) {
-      return {
-        invoke: async () => ({
-          sub_questions: ["萧峰是谁？"],
-          reason: "单次检索",
-        }),
-      };
+    if (keys.includes("mode")) {
+      return { invoke: async () => ({ mode: "single_retrieval", reason: "单跳查书" }) };
     }
     return {
       invoke: async () => ({
+        isSufficient: true,
         nextAction: "generate",
         missing: [],
+        nextPlanItemAddressesGap: false,
         reason: "资料充分",
       }),
     };
@@ -114,13 +118,18 @@ class RerankApiModel {
 class RepeatedRetrievalModel {
   withStructuredOutput(schema) {
     const keys = Object.keys(schema.shape);
-    if (keys.includes("strategy")) {
-      return { invoke: async () => ({ strategy: "complex", reason: "需要查书" }) };
+    if (keys.includes("mode")) {
+      return { invoke: async () => ({ mode: "multi_hop", reason: "需要多跳查书" }) };
     }
     if (keys.includes("sub_questions")) {
       return {
         invoke: async () => ({
-          sub_questions: Array.from({ length: 8 }, (_, index) => `子问题 ${index + 1}`),
+          sub_questions: Array.from({ length: 8 }, (_, index) => ({
+            question: `子问题 ${index + 1}`,
+            purpose: `必要事实 ${index + 1}`,
+            dependsOn: [],
+            introducedAssumptions: [],
+          })),
           reason: "测试最大合法检索路径",
         }),
       };
@@ -139,8 +148,10 @@ class RepeatedRetrievalModel {
     }
     return {
       invoke: async () => ({
+        isSufficient: false,
         nextAction: "retrieve",
         missing: ["证据始终不足"],
+        nextPlanItemAddressesGap: true,
         reason: "继续请求检索直到达到有界上限",
       }),
     };
@@ -148,6 +159,33 @@ class RepeatedRetrievalModel {
 
   async invoke() {
     return { content: "达到检索上限后正常生成 [本地1]" };
+  }
+}
+
+class SingleHopMetricsModel {
+  withStructuredOutput(schema) {
+    const keys = Object.keys(schema.shape);
+    if (keys.includes("mode")) {
+      return {
+        invoke: async () => ({
+          mode: "single_retrieval",
+          reason: "一个完整检索问题即可回答",
+        }),
+      };
+    }
+    return {
+      invoke: async () => ({
+        isSufficient: true,
+        nextAction: "generate",
+        missing: [],
+        nextPlanItemAddressesGap: false,
+        reason: "首轮证据充分",
+      }),
+    };
+  }
+
+  async invoke() {
+    return { content: "阿朱这样做是为了保护段正淳 [本地1]。" };
   }
 }
 
@@ -172,6 +210,9 @@ function createTestConfig() {
       retrievalK: 5,
       maxRetrievals: 4,
       maxContextDocuments: 8,
+      maxSubQuestions: 4,
+      maxPlanRepairAttempts: 1,
+      maxSingleRetrievals: 2,
     },
     webSearch: {
       enabled: false,
@@ -185,6 +226,7 @@ function createTestConfig() {
 function createRepeatedRetrievalRag(rerankMode) {
   const config = createTestConfig();
   config.rag.maxRetrievals = 8;
+  config.rag.maxSubQuestions = 8;
   config.rerank = rerankMode === "disabled"
     ? { enabled: false }
     : {
@@ -261,12 +303,67 @@ test("createEbookRag().ask() keeps its API and exposes rewrite trace", async () 
 
   assert.equal(result.answer, "最终回答 [本地1]");
   assert.equal(result.route.strategy, "complex");
+  assert.equal(result.route.mode, "multi_hop");
   assert.equal(result.sources.length, 2);
   assert.deepEqual(queries, ["误杀阿朱的人是谁？", "萧峰后来经历了什么？"]);
   assert.equal(result.trace.rewriteHistory[1].rewriteApplied, true);
   assert.equal(result.trace.retrievals[1].query, "萧峰后来经历了什么？");
   assert.equal(result.trace.retrievals[1].documentIds[0], "doc-2");
   assert.equal(rerankCalls, 0);
+});
+
+test("motivating question uses one retrieval and reports exact execution metrics", async () => {
+  const queries = [];
+  const rag = createEbookRag({
+    config: createTestConfig(),
+    model: new SingleHopMetricsModel(),
+    embeddings: {},
+    milvusClient: {},
+    retriever: {
+      async search(query) {
+        queries.push(query);
+        return [{
+          id: "azhu-motive",
+          score: 0.95,
+          bookId: "1",
+          bookName: "天龙八部",
+          chapterNum: 41,
+          chunkIndex: 2,
+          content: "敏感正文哨兵：阿朱决定以自己代替段正淳赴约。",
+        }];
+      },
+    },
+  });
+
+  const result = await rag.ask("阿朱为什么要假扮段正淳？");
+
+  assert.deepEqual(queries, ["阿朱为什么要假扮段正淳？"]);
+  assert.equal(result.route.strategy, "complex");
+  assert.equal(result.route.mode, "single_retrieval");
+  assert.deepEqual(result.trace.subQuestions, ["阿朱为什么要假扮段正淳？"]);
+  assert.deepEqual(result.trace.rewriteHistory, []);
+  assert.equal(result.trace.retrievalCount, 1);
+  assert.equal(result.trace.execution.localRetrievalCount, 1);
+  assert.equal(result.trace.execution.llmCallCount, 3);
+  assert.deepEqual(result.trace.execution.llmCalls, {
+    route: 1,
+    decompose: 0,
+    rewrite: 0,
+    evaluate: 1,
+    generate: 1,
+    citationCorrection: 0,
+  });
+  assert.equal(
+    Object.values(result.trace.execution.nodes)
+      .reduce((total, node) => total + node.count, 0),
+    5,
+  );
+  assert.ok(result.trace.execution.totalDurationMs >= 0);
+  assert.equal(result.trace.execution.finalContextDocumentCount, 1);
+  assert.doesNotMatch(
+    JSON.stringify(result.trace.execution),
+    /敏感正文哨兵|test-key/,
+  );
 });
 
 test("createEbookRag corrects local reference 15 when only 14 sources exist", async () => {
@@ -313,6 +410,8 @@ test("createEbookRag corrects local reference 15 when only 14 sources exist", as
   assert.deepEqual(result.trace.citationValidation.finalInvalidReferences, []);
   assert.equal(result.trace.citationValidation.correctionAttempts, 1);
   assert.equal(result.trace.citationValidation.contentSupportChecked, false);
+  assert.equal(result.trace.execution.llmCalls.citationCorrection, 1);
+  assert.equal(result.trace.execution.llmCallCount, 4);
 });
 
 test("createEbookRag applies optional Rerank while preserving its response API", async () => {
@@ -448,6 +547,8 @@ test("maximum repeated retrieval path terminates when Rerank is disabled", async
   assert.equal(counters.retrievals, 8);
   assert.equal(counters.reranks, 0);
   assert.ok(result.trace.retrievals.every((retrieval) => retrieval.rerank === null));
+  assert.equal(result.trace.execution.llmCallCount, 11);
+  assert.equal(result.trace.execution.rerankRequestCount, 0);
 });
 
 test("maximum repeated retrieval path terminates after successful Rerank", async () => {
@@ -458,6 +559,8 @@ test("maximum repeated retrieval path terminates after successful Rerank", async
   assert.equal(result.trace.retrievalCount, 8);
   assert.equal(counters.retrievals, 8);
   assert.equal(counters.reranks, 8);
+  assert.equal(result.trace.execution.rerankRequestCount, 8);
+  assert.equal(result.trace.execution.rerankFallbackCount, 0);
   assert.ok(result.trace.retrievals.every(
     (retrieval) => retrieval.rerank.status === "success",
   ));
@@ -471,6 +574,8 @@ test("maximum repeated retrieval path terminates after Rerank fallback", async (
   assert.equal(result.trace.retrievalCount, 8);
   assert.equal(counters.retrievals, 8);
   assert.equal(counters.reranks, 8);
+  assert.equal(result.trace.execution.rerankRequestCount, 8);
+  assert.equal(result.trace.execution.rerankFallbackCount, 8);
   assert.ok(result.trace.retrievals.every(
     (retrieval) => retrieval.rerank.status === "fallback",
   ));

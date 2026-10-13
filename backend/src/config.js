@@ -24,6 +24,17 @@ function positiveInteger(env, name, fallback) {
   return value;
 }
 
+function boundedInteger(env, name, fallback, { minimum, maximum }) {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} 必须是 ${minimum} 到 ${maximum} 之间的整数`);
+  }
+  return value;
+}
+
 function booleanValue(env, name, fallback) {
   const raw = env[name]?.trim().toLowerCase();
   if (!raw) return fallback;
@@ -76,7 +87,21 @@ export function getConfig(env = process.env) {
       bookName: env.BOOK_NAME?.trim() || "天龙八部",
       retrievalK,
       maxRetrievals: positiveInteger(env, "MAX_RETRIEVALS", 8),
-      maxContextDocuments: positiveInteger(env, "MAX_CONTEXT_DOCUMENTS", 24),
+      maxContextDocuments: positiveInteger(env, "MAX_CONTEXT_DOCUMENTS", 12),
+      maxSubQuestions: boundedInteger(env, "MAX_SUB_QUESTIONS", 4, {
+        minimum: 1,
+        maximum: 8,
+      }),
+      maxPlanRepairAttempts: boundedInteger(
+        env,
+        "MAX_PLAN_REPAIR_ATTEMPTS",
+        1,
+        { minimum: 0, maximum: 2 },
+      ),
+      maxSingleRetrievals: boundedInteger(env, "MAX_SINGLE_RETRIEVALS", 2, {
+        minimum: 1,
+        maximum: 3,
+      }),
     },
     rerank: {
       enabled: rerankEnabled,
