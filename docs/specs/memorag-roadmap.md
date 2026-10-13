@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v0.6（2026-10-13）
+> 版本：v0.7（2026-10-13）
 >
-> 状态：**P3-0、P3-1、P3-2、P3-2.1、P3-2.2 已完成；P3-2.2 的 59/59 Mock 回归通过，真实模型的 coverage 判断与答案忠实度待验收。P3-3、P3-4 未开始。**
+> 状态：**P3-0、P3-1、P3-2、P3-2.1、P3-2.2、P3-2.3 已完成；P3-2.3 的 59/59 Mock 行为回归通过，P3-2.2 的真实模型 coverage 判断与答案忠实度仍待验收。P3-3、P3-4 未开始。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -234,7 +234,7 @@ mergeUniqueDocuments
 
 ## 9. P3-1～P3-4 可执行任务清单
 
-任务严格按 `P3-1 → P3-2 → P3-2.1 → P3-2.2 → P3-3 → P3-4` 执行，一次只做一个任务。每轮完成后先报告并等待用户确认。
+任务严格按 `P3-1 → P3-2 → P3-2.1 → P3-2.2 → P3-2.3 → P3-3 → P3-4` 执行，一次只做一个任务。每轮完成后先报告并等待用户确认。
 
 ### P3-1：引用快照与编号一致性（**代码完成：2026-10-12**）
 
@@ -626,6 +626,48 @@ flowchart LR
 
 **依赖关系**：依赖 P3-1 引用快照和 P3-2.1 路由/指标；代码已完成，等待真实环境验收。本轮不开始 P3-3。
 
+### P3-2.3：LangGraph 模块化重构与解耦（**代码完成：2026-10-13**）
+
+**任务性质**：以 Git commit `cdd7fb8` 为稳定行为基线，只拆分 `backend/src/rag/ebook/agent-graph.js` 的结构职责，不修改三态路由、拆题、依赖改写、检索、Rerank、coverage、缺口恢复、联网、生成、引用校验、异常回退或循环预算。
+
+**完成状态**：模块化重构与 59/59 Mock 行为回归已完成，SDD 升级为 v0.7。`agent-graph.js` 从 1676 行减少为 131 行，仅保留配置边界归一化、依赖装配、节点注册、条件边和编译；拆分后相关代码共 1816 行，目标是降低耦合而非压缩总代码量。未调用真实模型、Qwen Rerank、Bocha、LangSmith 或数据库。
+
+**实际模块结构与职责**：
+
+- `state.js`：唯一维护 LangGraph State Annotation 与初始状态，不创建外部客户端。
+- `schemas.js`：集中保存 route、decompose、rewrite、coverage/evaluate 的 Zod 输出契约。
+- `nodes/route.js`：三态路由和单跳检索准备；`nodes/decompose.js`：受限拆题、有限计划修复和安全单跳回退。
+- `nodes/rewrite.js`：依赖证据约束改写、占位符阻断和原始完整问题回退；`nodes/retrieve.js`：实际查询调用、Rerank trace、文档合并及检索历史。
+- `nodes/evaluate.js`：逐项 coverage、预算判断、缺口恢复和联网决策；`nodes/web-search.js`：受图预算控制的联网结果合并；`nodes/generate.js`：direct/证据受限生成和引用纠正调用。
+- `services/evidence.js`：改写/评估证据快照、coverage 归一化及改写结果纯校验；`services/citations.js`：消息正文转换、引用编号校验/清理和有限纠正生成。
+- `services/document-merge.js`：普通分数合并、RRF、上下文构造；`services/planning.js`：计划校验、查询规范化、补检查询和 recursion limit；`services/execution.js`：请求内节点、LLM、检索、Rerank、联网次数与耗时累计。
+
+**依赖传递和兼容边界**：
+
+- `createAgenticRagGraph()` 仍是唯一装配入口。`model`、`retriever`、`webSearch`、书名及预算先按原规则归一化，再通过节点工厂参数显式注入；模块 import 阶段不执行模型调用、检索、联网或数据库访问。
+- Graph 的 State 字段、9 个节点名称、全部条件边、终止路径及 `recursionLimit` 公式保持不变。节点只依赖 schema 和无状态 service，service 不反向导入节点或 Graph，检查未发现循环依赖。
+- `agent-graph.js` 继续重导出原有 11 个公共符号，`createEbookRag().ask()` 以及 `answer/route/sources/webSources/trace` 字段不变；配置默认值、prompt 文义、检索参数、RRF、排序和 coverage 规则均未调整。
+
+**实际修改文件**：
+
+- `backend/src/rag/ebook/agent-graph.js`：收缩为 Graph 装配和兼容导出层。
+- 新增 `backend/src/rag/ebook/state.js`、`schemas.js`。
+- 新增 `backend/src/rag/ebook/nodes/{route,decompose,rewrite,retrieve,evaluate,web-search,generate}.js`。
+- 新增 `backend/src/rag/ebook/services/{evidence,citations,document-merge,execution,planning}.js`。
+- `backend/test/agent-graph.test.js`：在既有依赖型两跳用例中增加确定性行为契约，不增加测试数量。
+- `docs/specs/memorag-roadmap.md`：记录 P3-2.3 完成状态、模块边界、测试和限制。
+
+**测试与行为对照结果**：
+
+- 先在 `cdd7fb8` 单文件结构上锁定既有两跳场景的确定性契约，再用同一测试验证重构结果：节点类型及执行次数、实际检索查询和 2 次检索、分类后的 6 次 LLM 调用、依赖改写、coverage、引用文档快照和引用校验完全一致；耗时只校验非确定性的字段结构与数值类型。
+- 显式关闭 `LANGSMITH_TRACING`、`LANGSMITH_TRACING_V2`、`LANGCHAIN_TRACING`、`LANGCHAIN_TRACING_V2` 后执行完整 `npm test`，6/6 文件级 suite 通过；源码共 59 个 `test()`，59 通过、0 失败。
+- 回归继续覆盖三态路由、计划修复、安全改写回退、coverage 与一次缺口恢复、文档去重/RRF/Rerank、引用编号与来源快照、异常/预算/最大合法循环终止以及 API/trace 兼容。
+- 所有新增模块通过 Node 语法检查；静态 import 关系为单向依赖，未发现循环或 import-time 外部副作用。
+
+**行为差异与已知限制**：没有发现确定性业务行为差异。模块拆分本身不改善 P3-2.2 已知的真实模型语义误判、答案忠实度或多轮网页编号问题，也未验证真实服务集成；这些限制继续按原阶段归属处理。重构保留少量模块内重复的 `unique` 辅助函数，以避免为了消除几行重复代码引入跨 service 耦合。
+
+**依赖关系**：依赖 `cdd7fb8` 的 P3-2.2 稳定基线；P3-3 可在本结构上按节点边界接入显式追踪，但本任务没有开始 P3-3 或 P3-4。
+
 ### P3-3：LangSmith 显式追踪与隐私边界
 
 **目标**：在默认不外传的前提下，可选观察 `route/decompose/rewrite/retrieve/rerank/evaluate/web/generate`，并消除开发机 env 对 Mock 测试的隐式影响。
@@ -729,4 +771,4 @@ P3-0 已完成以下设计决策：
 - 当前 LangSmith 新旧 env 命名兼容，但隐式启用会影响测试并可能上传内容；P3-3 改为显式配置、默认关闭、默认 `metadata_only`，生活笔记另行默认阻断。
 - 仓库没有可证明存在的生活笔记 ES/Milvus Schema 或当前实现；P3-4 只交付只读适配层和 Mock 验收，使用 RRF，严格双端租户过滤。
 
-P3-1、P3-2、P3-2.1、P3-2.2 完成状态与限制见第 9 节；P3-2.2 已完成代码与 59/59 Mock 回归，等待真实模型的 coverage、依赖恢复和答案忠实度验收。本轮不开始 P3-3 或 P3-4。
+P3-1、P3-2、P3-2.1、P3-2.2、P3-2.3 完成状态与限制见第 9 节；P3-2.3 已完成结构重构和 59/59 Mock 行为回归，P3-2.2 仍等待真实模型的 coverage、依赖恢复和答案忠实度验收。本轮不开始 P3-3 或 P3-4。

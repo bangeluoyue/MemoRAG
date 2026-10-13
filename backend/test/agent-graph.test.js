@@ -198,6 +198,61 @@ test("scenario A: dependent sub-question uses the rewritten query", async () => 
   assert.equal(result.retrievalHistory[1].query, "萧峰后来经历了什么？");
   assert.match(model.rewritePrompts[0], /doc-q1/);
   assert.doesNotMatch(model.rewritePrompts[0], /萧峰后来经历了聚贤庄大战/);
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.entries(result.execution.nodes).map(([name, metrics]) => [
+        name,
+        metrics.count,
+      ]),
+    ),
+    {
+      routeQuestion: 1,
+      decomposeQuestion: 1,
+      rewriteSubQuestion: 2,
+      retrieve: 2,
+      evaluate: 2,
+      generate: 1,
+    },
+  );
+  assert.deepEqual(result.execution.llmCalls, {
+    route: 1,
+    decompose: 1,
+    rewrite: 1,
+    evaluate: 2,
+    generate: 1,
+    citationCorrection: 0,
+  });
+  assert.equal(result.execution.localRetrievalCount, 2);
+  assert.deepEqual(
+    result.coverage.map((item) => ({
+      planIndex: item.planIndex,
+      hasRelevantEvidence: item.hasRelevantEvidence,
+      isSufficient: item.isSufficient,
+      hasConflictingEvidence: item.hasConflictingEvidence,
+      supportingDocumentIds: item.supportingDocumentIds,
+    })),
+    [
+      {
+        planIndex: 0,
+        hasRelevantEvidence: true,
+        isSufficient: true,
+        hasConflictingEvidence: false,
+        supportingDocumentIds: ["doc-q1"],
+      },
+      {
+        planIndex: 1,
+        hasRelevantEvidence: true,
+        isSufficient: true,
+        hasConflictingEvidence: false,
+        supportingDocumentIds: ["doc-q1"],
+      },
+    ],
+  );
+  assert.deepEqual(result.citationDocuments.map((item) => item.id), ["doc-q1"]);
+  assert.equal(result.citationValidation.status, "valid");
+  for (const metrics of Object.values(result.execution.nodes)) {
+    assert.equal(typeof metrics.durationMs, "number");
+  }
 });
 
 test("scenario B: independent sub-questions keep their original queries", async () => {
