@@ -52,6 +52,22 @@ function enumValue(env, name, allowedValues, fallback) {
   return raw;
 }
 
+function firstNonEmpty(env, names) {
+  for (const name of names) {
+    const value = env[name]?.trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function firstTracingEnabled(env, names) {
+  for (const name of names) {
+    const value = env[name]?.trim();
+    if (value) return value === "true";
+  }
+  return false;
+}
+
 export function getConfig(env = process.env) {
   const bochaApiKey = env.BOCHA_API_KEY?.trim() || "";
   const modelApiKey = required(env, "OPENAI_API_KEY");
@@ -63,6 +79,16 @@ export function getConfig(env = process.env) {
     positiveInteger(env, "RERANK_CANDIDATE_K", Math.max(20, rerankTopN)),
   );
   const rerankUrl = env.RERANK_URL?.trim() || "";
+  const langsmithRequested = firstTracingEnabled(env, [
+    "LANGSMITH_TRACING",
+    "LANGSMITH_TRACING_V2",
+    "LANGCHAIN_TRACING",
+    "LANGCHAIN_TRACING_V2",
+  ]);
+  const langsmithApiKey = firstNonEmpty(env, [
+    "LANGSMITH_API_KEY",
+    "LANGCHAIN_API_KEY",
+  ]);
 
   if (rerankEnabled && !rerankUrl) {
     throw new Error("启用 Rerank 时缺少必要环境变量：RERANK_URL");
@@ -131,6 +157,33 @@ export function getConfig(env = process.env) {
       apiKey: bochaApiKey,
       url: env.BOCHA_SEARCH_URL?.trim() || "https://api.bochaai.com/v1/web-search",
       maxSearches: positiveInteger(env, "MAX_WEB_SEARCHES", 2),
+    },
+    langsmith: {
+      requested: langsmithRequested,
+      enabled: langsmithRequested && Boolean(langsmithApiKey),
+      disabledReason: langsmithRequested && !langsmithApiKey
+        ? "missing_api_key"
+        : null,
+      apiKey: langsmithApiKey,
+      endpoint: firstNonEmpty(env, [
+        "LANGSMITH_ENDPOINT",
+        "LANGCHAIN_ENDPOINT",
+      ]) || undefined,
+      project: firstNonEmpty(env, [
+        "LANGSMITH_PROJECT",
+        "LANGCHAIN_PROJECT",
+      ]) || "memorag",
+      contentMode: enumValue(
+        env,
+        "MEMORAG_LANGSMITH_CONTENT_MODE",
+        ["metadata_only", "full"],
+        "metadata_only",
+      ),
+      noteTracingEnabled: booleanValue(
+        env,
+        "ENABLE_NOTE_LANGSMITH_TRACING",
+        false,
+      ),
     },
   };
 }

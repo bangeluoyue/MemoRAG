@@ -653,3 +653,260 @@ test("maximum repeated retrieval path terminates after Rerank fallback", async (
     (retrieval) => retrieval.rerank.status === "fallback",
   ));
 });
+
+test("LangSmith metadata-only tracing exposes the graph without private payloads", async () => {
+  class TracingModel {
+    constructor() {
+      this.evaluationCount = 0;
+    }
+
+    withStructuredOutput(schema) {
+      const keys = Object.keys(schema.shape);
+      if (keys.includes("mode")) {
+        return { invoke: async () => ({ mode: "multi_hop", reason: "两跳测试" }) };
+      }
+      if (keys.includes("sub_questions")) {
+        return {
+          invoke: async () => ({
+            sub_questions: [
+              {
+                question: "身份是谁？",
+                purpose: "确认人物",
+                dependsOn: [],
+                introducedAssumptions: [],
+              },
+              {
+                question: "第 1 项确认的人物后来经历了什么？",
+                purpose: "确认后续经历",
+                dependsOn: [1],
+                introducedAssumptions: [],
+              },
+            ],
+            reason: "依赖计划",
+          }),
+        };
+      }
+      if (keys.includes("needsRewrite")) {
+        return {
+          invoke: async () => ({
+            needsRewrite: true,
+            rewrittenQuery: "人物甲后来经历了什么？",
+            resolvedEntities: ["人物甲"],
+            supportingEvidenceIndexes: [1],
+            hasConflictingEvidence: false,
+            reason: "前序证据已确认实体",
+          }),
+        };
+      }
+      return {
+        invoke: async () => {
+          this.evaluationCount += 1;
+          if (this.evaluationCount === 1) {
+            return {
+              isSufficient: false,
+              coverage: [
+                {
+                  planIndex: 1,
+                  hasRelevantEvidence: true,
+                  isSufficient: true,
+                  hasConflictingEvidence: false,
+                  supportingEvidenceIndexes: [1],
+                  missing: "",
+                  reason: "身份已确认",
+                },
+                {
+                  planIndex: 2,
+                  hasRelevantEvidence: false,
+                  isSufficient: false,
+                  hasConflictingEvidence: false,
+                  supportingEvidenceIndexes: [],
+                  missing: "后续经历",
+                  reason: "尚未检索",
+                },
+              ],
+              nextAction: "retrieve",
+              missing: ["后续经历"],
+              nextPlanItemAddressesGap: true,
+              reason: "继续第二项",
+            };
+          }
+          if (this.evaluationCount === 2) {
+            return {
+              isSufficient: false,
+              coverage: [
+                {
+                  planIndex: 1,
+                  hasRelevantEvidence: true,
+                  isSufficient: true,
+                  hasConflictingEvidence: false,
+                  supportingEvidenceIndexes: [1],
+                  missing: "",
+                  reason: "身份已确认",
+                },
+                {
+                  planIndex: 2,
+                  hasRelevantEvidence: false,
+                  isSufficient: false,
+                  hasConflictingEvidence: false,
+                  supportingEvidenceIndexes: [],
+                  missing: "后续经历",
+                  reason: "本地证据不足",
+                },
+              ],
+              nextAction: "web_search",
+              web_query: "人物甲后续经历",
+              missing: ["后续经历"],
+              nextPlanItemAddressesGap: false,
+              reason: "使用联网回退",
+            };
+          }
+          return {
+            isSufficient: true,
+            coverage: [
+              {
+                planIndex: 1,
+                hasRelevantEvidence: true,
+                isSufficient: true,
+                hasConflictingEvidence: false,
+                supportingEvidenceIndexes: [1],
+                missing: "",
+                reason: "身份已确认",
+              },
+              {
+                planIndex: 2,
+                hasRelevantEvidence: true,
+                isSufficient: true,
+                hasConflictingEvidence: false,
+                supportedByWeb: true,
+                supportingEvidenceIndexes: [],
+                missing: "",
+                reason: "联网证据已补充",
+              },
+            ],
+            nextAction: "generate",
+            missing: [],
+            nextPlanItemAddressesGap: false,
+            reason: "证据充分",
+          };
+        },
+      };
+    }
+
+    async invoke() {
+      return { content: "PRIVATE_ANSWER_SENTINEL [本地1] [网页1]" };
+    }
+  }
+
+  class MemoryLangSmithClient {
+    constructor() {
+      this.calls = [];
+    }
+
+    async createRun(run) {
+      this.calls.push({ operation: "create", run });
+    }
+
+    async updateRun(runId, run) {
+      this.calls.push({ operation: "update", runId, run });
+    }
+  }
+
+  const config = createTestConfig();
+  config.rag.maxGapRecoveryAttempts = 0;
+  config.rerank = {
+    enabled: true,
+    apiKey: "PRIVATE_RERANK_KEY",
+    url: "https://example.test/rerank",
+    model: "qwen3-rerank",
+    topN: 1,
+    candidateK: 2,
+    timeoutMs: 100,
+    failureMode: "fallback",
+  };
+  config.webSearch.enabled = true;
+  config.langsmith = {
+    requested: true,
+    enabled: true,
+    apiKey: "PRIVATE_LANGSMITH_KEY",
+    project: "memorag-test",
+    contentMode: "metadata_only",
+    noteTracingEnabled: false,
+  };
+  const langsmithClient = new MemoryLangSmithClient();
+  let retrievalCount = 0;
+  const rag = createEbookRag({
+    config,
+    model: new TracingModel(),
+    embeddings: {},
+    milvusClient: {},
+    langsmithClient,
+    retriever: {
+      async search() {
+        retrievalCount += 1;
+        return [{
+          id: `trace-doc-${retrievalCount}`,
+          score: 0.9,
+          bookId: "1",
+          bookName: "天龙八部",
+          chapterNum: retrievalCount,
+          chunkIndex: 0,
+          content: retrievalCount === 1
+            ? "人物甲是目标人物。PRIVATE_DOCUMENT_SENTINEL"
+            : "当前片段不足以确认后续经历。PRIVATE_DOCUMENT_SENTINEL",
+        }];
+      },
+    },
+    reranker: {
+      async rerank() {
+        return [{ index: 0, score: 0.95, rank: 1 }];
+      },
+    },
+    webSearch: async () => ({
+      text: "PRIVATE_WEB_SENTINEL",
+      sources: [{ title: "测试网页", url: "https://example.test/source" }],
+    }),
+  });
+
+  const result = await rag.ask("身份是谁？他后来经历了什么？");
+  const runNames = new Set(langsmithClient.calls.map(({ run }) => run.name));
+  for (const name of [
+    "routeQuestion",
+    "decomposeQuestion",
+    "rewriteSubQuestion",
+    "retrieve",
+    "rerank",
+    "evaluate",
+    "webSearch",
+    "generate",
+  ]) {
+    assert.equal(runNames.has(name), true, `缺少 LangSmith span：${name}`);
+  }
+
+  const serializedTrace = JSON.stringify(langsmithClient.calls);
+  assert.doesNotMatch(
+    serializedTrace,
+    /PRIVATE_DOCUMENT_SENTINEL|PRIVATE_WEB_SENTINEL|PRIVATE_ANSWER_SENTINEL/,
+  );
+  assert.doesNotMatch(
+    serializedTrace,
+    /PRIVATE_LANGSMITH_KEY|PRIVATE_RERANK_KEY|test-key/,
+  );
+  const retrieveMetadata = langsmithClient.calls
+    .filter(({ run }) => run.name === "retrieve")
+    .map(({ run }) => run.extra?.metadata ?? {});
+  assert.ok(retrieveMetadata.some((metadata) => (
+    metadata.query === "人物甲后来经历了什么？"
+  )));
+  assert.ok(retrieveMetadata.some((metadata) => (
+    metadata.document_ids?.includes("trace-doc-1")
+  )));
+  const rerankMetadata = langsmithClient.calls
+    .filter(({ run }) => run.name === "rerank")
+    .map(({ run }) => run.extra?.metadata ?? {});
+  assert.ok(rerankMetadata.some((metadata) => metadata.candidate_count === 1));
+  assert.ok(rerankMetadata.some((metadata) => metadata.rank_changes?.length === 1));
+  assert.equal(result.trace.langsmith.enabled, true);
+  assert.equal(result.trace.langsmith.contentMode, "metadata_only");
+  assert.equal(result.trace.langsmith.errorCount, 0);
+  assert.ok(result.trace.langsmith.traceId);
+});

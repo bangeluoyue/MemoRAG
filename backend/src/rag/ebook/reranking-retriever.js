@@ -14,11 +14,13 @@ export class RerankingBookRetriever {
     reranker,
     candidateK = 20,
     failureMode = "fallback",
+    traceOperation = null,
   }) {
     this.retriever = retriever;
     this.reranker = reranker;
     this.candidateK = candidateK;
     this.failureMode = failureMode;
+    this.traceOperation = traceOperation;
   }
 
   async search(query, options) {
@@ -72,9 +74,17 @@ export class RerankingBookRetriever {
 
     const rerankStartedAt = Date.now();
     try {
-      const rankings = await this.reranker.rerank(query, sameBookCandidates, {
+      const rerank = () => this.reranker.rerank(query, sameBookCandidates, {
         topN: requestedTopN,
       });
+      const rankings = this.traceOperation
+        ? await this.traceOperation("rerank", rerank, {
+          query,
+          document_ids: sameBookCandidates.map(documentId),
+          candidate_count: sameBookCandidates.length,
+          requested_top_n: requestedTopN,
+        })
+        : await rerank();
       const mappedDocuments = rankings.map(({ index, score, rank }) => ({
         ...sameBookCandidates[index],
         originalRank: index + 1,

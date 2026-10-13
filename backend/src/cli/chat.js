@@ -84,6 +84,14 @@ function printResult(result) {
       `生成阶段耗时：初次生成 ${llm.generate ?? 0}ms，引用纠正 ${llm.citationCorrection ?? 0}ms`,
     );
   }
+  const langsmith = result.trace.langsmith;
+  if (langsmith?.enabled) {
+    console.log(
+      `LangSmith：project=${langsmith.project}，trace=${langsmith.traceId}，内容模式=${langsmith.contentMode}`,
+    );
+  } else if (langsmith?.requested) {
+    console.log(`LangSmith：未启用（${langsmith.disabledReason}）`);
+  }
 }
 
 export async function main() {

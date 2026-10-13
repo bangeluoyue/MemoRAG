@@ -1,5 +1,6 @@
 import { ChatOpenAI, OpenAIEmbeddings } from "@langchain/openai";
 import { getConfig } from "../../config.js";
+import { createLangSmithObservability } from "../../observability/langsmith.js";
 import {
   calculateAgenticRagRecursionLimit,
   createAgenticRagGraph,
@@ -30,6 +31,10 @@ function buildExecutionTrace(execution, finalContextDocumentCount) {
 
 export function createEbookRag(options = {}) {
   const config = options.config ?? getConfig();
+  const observability = options.observability ?? createLangSmithObservability(
+    config.langsmith,
+    { client: options.langsmithClient },
+  );
   const model = options.model ?? new ChatOpenAI({
     model: config.model.chatModel,
     apiKey: config.model.apiKey,
@@ -69,6 +74,7 @@ export function createEbookRag(options = {}) {
       reranker,
       candidateK: rerankConfig.candidateK,
       failureMode: rerankConfig.failureMode,
+      traceOperation: observability.traceOperation,
     })
     : baseRetriever;
   const webSearch = options.webSearch
@@ -99,12 +105,23 @@ export function createEbookRag(options = {}) {
         maxWebSearches: webSearch ? config.webSearch.maxSearches : 0,
       });
 
-      const result = await graph.invoke(createInitialState(normalizedQuestion, {
+      const initialState = createInitialState(normalizedQuestion, {
         bookId: askOptions.bookId ?? config.milvus.bookId,
         k: askOptions.k
           ?? (rerankConfig.enabled ? rerankConfig.topN : config.rag.retrievalK),
         maxRetrievals,
-      }), { recursionLimit });
+      });
+      const tracing = observability.createInvocation({
+        scope: "ebook",
+        name: "memorag-ebook-rag",
+        metadata: {
+          knowledge_base: "ebook",
+        },
+      });
+      const result = await tracing.run(() => graph.invoke(initialState, {
+        recursionLimit,
+        runName: "ebook-agent-graph",
+      }));
       const citationDocuments = result.citationDocuments ?? result.documents ?? [];
 
       return {
@@ -160,13 +177,18 @@ export function createEbookRag(options = {}) {
             result.execution,
             citationDocuments.length,
           ),
+          langsmith: tracing.summary(),
         },
       };
     },
 
     async close() {
-      if (!options.milvusClient && typeof milvusClient.closeConnection === "function") {
-        await milvusClient.closeConnection();
+      try {
+        if (!options.milvusClient && typeof milvusClient.closeConnection === "function") {
+          await milvusClient.closeConnection();
+        }
+      } finally {
+        await observability.close();
       }
     },
   };
@@ -176,6 +198,7 @@ export {
   calculateAgenticRagRecursionLimit,
   createAgenticRagGraph,
   createInitialState,
+  createLangSmithObservability,
   createMilvusClient,
   DashScopeReranker,
   MilvusBookRetriever,

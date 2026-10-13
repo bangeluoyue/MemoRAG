@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v0.7（2026-10-13）
+> 版本：v0.8（2026-10-13）
 >
-> 状态：**P3-0、P3-1、P3-2、P3-2.1、P3-2.2、P3-2.3 已完成；P3-2.3 的 59/59 Mock 行为回归通过，P3-2.2 的真实模型 coverage 判断与答案忠实度仍待验收。P3-3、P3-4 未开始。**
+> 状态：**P3-0、P3-1、P3-2、P3-2.1、P3-2.2、P3-2.3、P3-3 已完成；P3-3 的 68/68 Mock 回归通过，真实 LangSmith 云端链路可见性待授权验收。P3-2.2 的真实模型 coverage 判断与答案忠实度仍待验收；P3-4 未开始。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -90,7 +90,7 @@ flowchart LR
 | EPUB 的 ES 混合检索 | 无代码、无索引定义 | **不存在**，本阶段也不设计为 EPUB 能力。 |
 | 生活笔记 ES + Milvus 检索 | 仅旧 Demo | **未产品化**；无当前适配层、配置、隔离或测试。 |
 | 生活笔记 CRUD / 原始存储 / 双写 | 无当前代码 | **未实现**，属于 P4-B。 |
-| LangSmith | 由当前 LangChain SDK 根据进程 env 自动启用 | **隐式可用但未受应用控制**；没有显式隐私策略、脱敏、测试隔离或 README 说明。 |
+| LangSmith | `observability/langsmith.js`、`config.js`、`ebook/index.js` | **P3-3 已完成显式接入**；默认关闭，支持 metadata-only 白名单、full 模式敏感字段屏蔽、测试隔离、Rerank 子 span 和 Client 失败降级。真实云端显示待授权验收。 |
 | EPUB 入库 | 仅 `legacy/agentic/ebook-writter.mjs` | **不属于当前主线**；旧脚本会创建索引并写 Milvus，且使用 `ebook2`，本阶段禁止执行。 |
 
 ### 4.1 测试基线
@@ -187,8 +187,8 @@ mergeUniqueDocuments
 - 追踪开关同时识别 `LANGSMITH_TRACING`、`LANGSMITH_TRACING_V2`、旧名 `LANGCHAIN_TRACING` 和 `LANGCHAIN_TRACING_V2`；值只有精确的字符串 `"true"` 才启用。
 - API Key、Project 和 Endpoint 通过同一别名读取器解析，优先 `LANGSMITH_*`，再回退 `LANGCHAIN_*`。因此当前 `.env` 中 `LANGSMITH_TRACING` + `LANGCHAIN_API_KEY` + `LANGCHAIN_PROJECT` 的混合命名，在已安装版本上是兼容的。
 - SDK 还接受 `LANGSMITH_HIDE_INPUTS`、`LANGSMITH_HIDE_OUTPUTS`、`LANGSMITH_HIDE_METADATA`（以及相应 `LANGCHAIN_*` 别名）。仅隐藏正文但保留安全元数据时，P3-3 应使用显式 Client/Tracer 配置，不能假定设置 env 就完成脱敏。
-- 当前应用代码没有 LangSmith 配置对象或隐私边界；`config.js` 加载 `.env` 后，LangChain 会自动读取这些变量。因此开发机上的全局开关会影响 Mock 测试和所有图调用。
-- `.env.example` 当前没有任何 LangSmith 变量。P3-3 才允许更新它，本轮不修改。
+- P3-0 核对时应用代码没有 LangSmith 配置对象或隐私边界；P3-3 已改为显式配置和作用域，未启用时用 `tracingEnabled:false` 阻断 SDK 对进程环境的隐式继承。
+- P3-3 已在 `.env.example` 增加默认关闭的 LangSmith 变量，并通过测试预加载隔离开发机 `.env`。
 
 冻结的兼容策略：
 
@@ -670,6 +670,8 @@ flowchart LR
 
 ### P3-3：LangSmith 显式追踪与隐私边界
 
+**完成状态**：代码、配置模板、README 和 68/68 Mock 回归已完成，SDD 升级为 v0.8。追踪默认关闭；配置缺失、作用域关闭或 LangSmith Client 失败均不影响正常问答。本轮只使用内存假 Client，未调用 LangSmith 云端、真实模型、Rerank、Bocha 或数据库。
+
 **目标**：在默认不外传的前提下，可选观察 `route/decompose/rewrite/retrieve/rerank/evaluate/web/generate`，并消除开发机 env 对 Mock 测试的隐式影响。
 
 **冻结设计**：
@@ -703,6 +705,37 @@ flowchart LR
 7. 默认验收不访问 LangSmith 云端。只有明确授权后才做一次最小真实 trace，并把“本地配置通过”和“云端 trace 可见”分别报告。
 
 **主要风险**：LangGraph/LLM 自动 tracing 默认会捕获完整节点输入输出；仅添加 metadata 而不隐藏默认 inputs/outputs 仍会泄露正文，验收必须检查最终 payload。
+
+**实际实现结果**：
+
+- `createEbookRag().ask()` 使用 LangSmith 官方 `traceable` 建立请求级根 span，LangGraph 通过现有 callback/AsyncLocalStorage 机制自动生成 Graph 和节点子 span；未重写节点执行逻辑。可观察 `routeQuestion`、`decomposeQuestion`、`rewriteSubQuestion`、`retrieve`、`evaluate`、`webSearch`、`generate`，Rerank 通过同一上下文中的 `rerank` 子 span 补齐。
+- 显式配置识别 `LANGSMITH_TRACING`、`LANGSMITH_TRACING_V2`、`LANGCHAIN_TRACING`、`LANGCHAIN_TRACING_V2`，只有优先级最高的已设置变量精确等于字符串 `true` 才请求启用；Key、Project、Endpoint 优先 `LANGSMITH_*`，再回退 `LANGCHAIN_*`。请求启用但没有 Key 时安全关闭并记录 `missing_api_key`，不抛错。
+- 默认 `MEMORAG_LANGSMITH_CONTENT_MODE=metadata_only`。发送前清空每个 run 的 inputs、outputs、events、attachments 和 serialized payload，只保留 span 名称/类型、耗时、实际检索 query、文档 ID、计划/检索/联网/LLM 次数、coverage 安全状态、Rerank 前后 rank 和错误类别等白名单 metadata。
+- `full` 模式允许上传问题、prompt、上下文和输出，但发送前仍递归屏蔽名称包含 API Key、Token、Authorization、Secret、Password、Credential 或 Cookie 的字段，并把完整错误信息收敛为类别。README 明确标注该模式只能用于用户知情且无私人内容的环境。
+- `ENABLE_NOTE_LANGSMITH_TRACING=false` 默认阻断未来生活笔记作用域；即使全局环境开启追踪，notes scope 仍使用 `tracingEnabled:false`。只有独立显式开启时才可追踪，且默认内容模式仍为 `metadata_only`。
+- 未启用时不创建 LangSmith Client，并用官方 `tracingEnabled:false` 作用域压制 SDK 从开发机环境隐式继承的 tracer。`npm test` 预加载隔离文件，将新旧四个 tracing 开关强制设为 false，因此不再依赖调用者手工设置 shell 变量，也不会因 `.env` 中的开关等待外部 trace。
+- LangSmith Client 的 `createRun`、`updateRun` 和 flush 异常在适配层内转换为不含 message/payload 的安全错误类别；问答结果不受影响。`trace.langsmith` 向后兼容新增 requested/enabled/contentMode/project/traceId/disabledReason/errorCount/errors，CLI 仅在启用时打印 project、trace ID 和内容模式。
+- 直接使用 `langsmith` SDK，因此将当前锁定的 `0.10.11` 提升为直接依赖；没有增加额外监控服务、评测平台或数据库状态。
+
+**实际修改文件**：
+
+- 新增 `backend/src/observability/langsmith.js`：显式作用域、Client 构建、metadata-only 白名单、full 模式密钥字段屏蔽、错误隔离和 Rerank 子 span。
+- `backend/src/config.js`、`backend/.env.example`：追踪别名、内容模式、Project/Endpoint 和 notes 独立开关。
+- `backend/src/rag/ebook/index.js`、`reranking-retriever.js`：请求级 Graph trace、Rerank span、trace 摘要与关闭时 flush；RAG 数据流和排序不变。
+- `backend/src/cli/chat.js`、`backend/README.md`：启用方式、trace ID、Web 控制台定位方法和上传边界。
+- `backend/package.json`、`package-lock.json`：直接声明 `langsmith@^0.10.11`，测试命令预加载追踪隔离。
+- 新增 `backend/test-support/setup.js`、`backend/test/langsmith.test.js`；更新 `config.test.js`、`ebook-rag.test.js`。
+
+**测试与验收结果**：
+
+- 7 个测试文件共 68 个 `test()`，68 通过、0 失败；直接执行 `npm test` 即会在加载业务模块前关闭四个追踪开关，不需要额外命令前缀。
+- 内存假 Client 验证默认关闭时零调用、外部环境强制开启时仍被应用关闭作用域阻断、别名优先级、精确 `true`、缺 Key 安全禁用、notes 独立阻断、Client 异常不影响回答，以及 full 模式递归密钥字段屏蔽。
+- 完整多跳 Mock 同时经过依赖改写、两轮检索、Rerank、coverage、联网和生成；断言目标 span 全部可见，metadata 包含 query、文档 ID 和 rank changes，同时发送载荷中不存在文档/网页/答案哨兵或测试 Key。
+- 原有 59 项 Agentic RAG、Rerank、引用、预算、终止、配置与 API 回归全部继续通过。未执行真实外部请求或数据库操作。
+
+**已知限制**：本轮只能证明本地 SDK 调用树和最终发送载荷满足 Mock 契约，不能声称真实 LangSmith Project 已显示 trace；需用户授权并提供有效配置后做一次最小真实验收。`metadata_only` 按冻结规格保留实际检索 query 和文档 ID，它们本身可能包含业务信息；生活笔记因此继续默认禁止追踪。普通 LangChain 模型在真实环境会作为节点下的子 span 自动出现，但脚本化 Mock 模型不是 Runnable，本轮只验证 Graph 节点和显式 Rerank span。低层直接调用 `createAgenticRagGraph().invoke()` 不经过应用级 observability 入口，生产调用应继续使用 `createEbookRag().ask()`。
+
+**依赖关系**：依赖 P3-2 Rerank 和 P3-2.3 节点模块边界；P3-4 可复用 notes 默认关闭作用域，但本轮没有开始 P3-4。
 
 ### P3-4：双知识库检索适配层与生活笔记混合检索
 
@@ -768,7 +801,7 @@ P3-0 已完成以下设计决策：
 - `[本地15]` 的首要缺口是生成后没有引用合法性校验，而不是 CLI 截断；P3-1 已用 Mock 复现并完成本地引用修复。
 - P3-1 已建立本地引用快照；原计划中的多轮 `[网页N]` 编号重置问题尚未完成，继续作为已知限制保留。
 - 旧 Qwen Rerank 的 HTTP 形状可迁移，但实现本身不能直接复用；P3-2 默认关闭、专用 Key 优先、失败默认回退，并以 rank fusion 防止重排结果被向量分数覆盖。
-- 当前 LangSmith 新旧 env 命名兼容，但隐式启用会影响测试并可能上传内容；P3-3 改为显式配置、默认关闭、默认 `metadata_only`，生活笔记另行默认阻断。
+- 当前 LangSmith 新旧 env 命名兼容；P3-3 已完成显式配置、默认关闭、默认 `metadata_only`、测试隔离和生活笔记默认阻断。真实 LangSmith 云端 trace 仍待授权验收。
 - 仓库没有可证明存在的生活笔记 ES/Milvus Schema 或当前实现；P3-4 只交付只读适配层和 Mock 验收，使用 RRF，严格双端租户过滤。
 
-P3-1、P3-2、P3-2.1、P3-2.2、P3-2.3 完成状态与限制见第 9 节；P3-2.3 已完成结构重构和 59/59 Mock 行为回归，P3-2.2 仍等待真实模型的 coverage、依赖恢复和答案忠实度验收。本轮不开始 P3-3 或 P3-4。
+P3-1、P3-2、P3-2.1、P3-2.2、P3-2.3、P3-3 完成状态与限制见第 9 节；P3-3 已完成显式追踪、隐私边界和 68/68 Mock 回归，真实 LangSmith 云端显示仍待授权验收。P3-2.2 仍等待真实模型的 coverage、依赖恢复和答案忠实度验收。本轮不开始 P3-4。

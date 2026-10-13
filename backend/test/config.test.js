@@ -25,6 +25,10 @@ test("getConfig applies the EPUB RAG defaults", () => {
   assert.equal(config.rag.maxPlanRepairAttempts, 1);
   assert.equal(config.rag.maxSingleRetrievals, 2);
   assert.equal(config.rag.maxGapRecoveryAttempts, 1);
+  assert.equal(config.langsmith.requested, false);
+  assert.equal(config.langsmith.enabled, false);
+  assert.equal(config.langsmith.contentMode, "metadata_only");
+  assert.equal(config.langsmith.noteTracingEnabled, false);
 });
 
 test("getConfig rejects an invalid embedding dimension", () => {
@@ -85,4 +89,62 @@ test("getConfig validates Agent planning and single-retrieval budgets", () => {
     () => getConfig({ ...validEnv, MAX_GAP_RECOVERY_ATTEMPTS: "2" }),
     /MAX_GAP_RECOVERY_ATTEMPTS/,
   );
+});
+
+test("getConfig resolves LangSmith aliases with LANGSMITH priority", () => {
+  const config = getConfig({
+    ...validEnv,
+    LANGSMITH_TRACING: "true",
+    LANGCHAIN_TRACING_V2: "false",
+    LANGSMITH_API_KEY: "preferred-key",
+    LANGCHAIN_API_KEY: "legacy-key",
+    LANGSMITH_PROJECT: "preferred-project",
+    LANGCHAIN_PROJECT: "legacy-project",
+    LANGSMITH_ENDPOINT: "https://preferred.example.test",
+    LANGCHAIN_ENDPOINT: "https://legacy.example.test",
+    MEMORAG_LANGSMITH_CONTENT_MODE: "full",
+    ENABLE_NOTE_LANGSMITH_TRACING: "true",
+  });
+
+  assert.equal(config.langsmith.requested, true);
+  assert.equal(config.langsmith.enabled, true);
+  assert.equal(config.langsmith.apiKey, "preferred-key");
+  assert.equal(config.langsmith.project, "preferred-project");
+  assert.equal(config.langsmith.endpoint, "https://preferred.example.test");
+  assert.equal(config.langsmith.contentMode, "full");
+  assert.equal(config.langsmith.noteTracingEnabled, true);
+
+  const legacyOnly = getConfig({
+    ...validEnv,
+    LANGCHAIN_TRACING_V2: "true",
+    LANGCHAIN_API_KEY: "legacy-key",
+    LANGCHAIN_PROJECT: "legacy-project",
+    LANGCHAIN_ENDPOINT: "https://legacy.example.test",
+  });
+  assert.equal(legacyOnly.langsmith.enabled, true);
+  assert.equal(legacyOnly.langsmith.apiKey, "legacy-key");
+  assert.equal(legacyOnly.langsmith.project, "legacy-project");
+  assert.equal(legacyOnly.langsmith.endpoint, "https://legacy.example.test");
+});
+
+test("getConfig safely disables requested tracing when the LangSmith key is absent", () => {
+  const config = getConfig({
+    ...validEnv,
+    LANGCHAIN_TRACING: "true",
+  });
+
+  assert.equal(config.langsmith.requested, true);
+  assert.equal(config.langsmith.enabled, false);
+  assert.equal(config.langsmith.disabledReason, "missing_api_key");
+});
+
+test("getConfig only enables tracing for the exact string true", () => {
+  const config = getConfig({
+    ...validEnv,
+    LANGSMITH_TRACING: "1",
+    LANGSMITH_API_KEY: "test-langsmith-key",
+  });
+
+  assert.equal(config.langsmith.requested, false);
+  assert.equal(config.langsmith.enabled, false);
 });
