@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v0.9（2026-10-13）
+> 版本：v1.0（2026-10-14）
 >
-> 状态：**P3-0、P3-1、P3-2、P3-2.1、P3-2.2、P3-2.3、P3-3、P3-4 已完成；P3-4 的 85/85 Mock 回归通过，生活笔记真实 ES/Milvus 索引存在性、mapping、租户过滤和检索质量待授权验收。P3-3 真实 LangSmith 云端链路可见性、P3-2.2 真实模型 coverage 与答案忠实度仍待验收。**
+> 状态：**P3-0～P3-4 与 P4-A 已完成；P4-A 的 100/100 Mock 回归通过，真实 EPUB 解析兼容性、Embedding 调用、Milvus Schema 和批量写入尚未授权验收。P3-4 生活笔记真实整合、P3-3 LangSmith 云端可见性、P3-2.2 真实模型 coverage 与答案忠实度仍待验收。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -91,7 +91,7 @@ flowchart LR
 | 生活笔记 ES + Milvus 检索 | 仅旧 Demo | **未产品化**；无当前适配层、配置、隔离或测试。 |
 | 生活笔记 CRUD / 原始存储 / 双写 | 无当前代码 | **未实现**，属于 P4-B。 |
 | LangSmith | `observability/langsmith.js`、`config.js`、`ebook/index.js` | **P3-3 已完成显式接入**；默认关闭，支持 metadata-only 白名单、full 模式敏感字段屏蔽、测试隔离、Rerank 子 span 和 Client 失败降级。真实云端显示待授权验收。 |
-| EPUB 入库 | 仅 `legacy/agentic/ebook-writter.mjs` | **不属于当前主线**；旧脚本会创建索引并写 Milvus，且使用 `ebook2`，本阶段禁止执行。 |
+| EPUB 入库 | `src/rag/ebook/ingestion/`、`src/cli/ingest-epub.js` | **P4-A 已完成 Mock 实现**；默认 dry-run，只向已存在且 Schema 兼容的 `ebook_collection` 批量 insert，不创建/删除/加载/重建或覆盖 Collection。真实入库未验收。 |
 
 ### 4.1 测试基线
 
@@ -122,7 +122,7 @@ npm test
 | `legacy/hybrid/query-augment.mjs` | 结构化三路查询、失败回退、查询去重思路 | 会额外调用 LLM；固定三条；与当前“拆题 + 依赖改写”可能重复放大召回和成本。P3-4 最小实现默认不启用查询扩展，先保证 `currentQuery` 原样透传；后续再以独立开关评测。 |
 | `legacy/hybrid/hybrid-retrieval.mjs` | ES hit 转文档、按逻辑 ID 去重、ES/Milvus 并行召回、空集合跳过 Rerank 的思路 | 顶层即连接/执行；依赖缺失；ES 地址、`life_notes`、召回数硬编码；没有 `userId`/知识库过滤；只是 ES 在前、Milvus 在后拼接，既没有 RRF 也没有可靠融合；导入会触发真实服务和模型调用。只能重写为适配层。 |
 | `legacy/agentic/agentic-rag.mjs` | 历史节点设计可作对照 | 当前 `src/rag/ebook/agent-graph.js` 已有更完整、安全的改写和可测试结构，不回迁旧实现。 |
-| `legacy/agentic/ebook-writter.mjs` | 后续 P4-A 可参考 EPUB 分章、分块和批量写入流程 | 会创建/加载/写入 Collection，名称和部分字段值与当前契约不一致；P3 禁止运行或复用。 |
+| `legacy/agentic/ebook-writter.mjs` | P4-A 已参考其 EPUB 按章、递归字符分块和批量写入流程 | 旧脚本会创建/加载 Collection、硬编码 `ebook2` 并有错误处理缺陷；主线没有直接导入或执行它。 |
 
 ### 5.1 Rerank 协议核对
 
@@ -792,9 +792,30 @@ flowchart LR
 
 **主要风险**：逻辑 ID 或租户字段在两个索引中不一致会造成误合并或越权；适配层必须 fail closed，不能用正文 hash 或后端局部 ID 猜测租户身份。
 
-## 10. 后续阶段（本阶段不实施）
+## 10. P4-A 与后续阶段
 
-- **P4-A EPUB 入库**：上传/读取 EPUB，解析、分章分块、Embedding、批处理写入；重复导入策略、失败重试、元数据校验；按明确授权进行实际数据库写入测试。
+### P4-A：EPUB 数据入库
+
+**完成状态**：服务层、CLI、使用文档和 100/100 Mock 回归已完成，SDD 升级为 v1.0。本轮未解析用户真实 EPUB，未调用真实 Embedding，未连接或写入 Milvus，未创建、加载、修改、删除或重建 Collection。
+
+**实现流程**：
+
+1. `epub-loader.js` 校验本地 `.epub` 文件，使用 `@lingo-reader/epub-parser` 按 spine 读取 XHTML，通过 `html-to-text` 转为规范化纯文本，保留 spine 顺序的 `chapterNum`。
+2. `chunker.js` 复用 `RecursiveCharacterTextSplitter`，默认 `chunkSize=500`、`chunkOverlap=50`；分块 ID 为 `ebook_` + SHA-256(`bookId/chapterNum/chunkIndex/content`)，不依赖运行时随机值。
+3. `milvus-writer.js` 只读检查 Collection 存在性与 `id/book_id/book_name/chapter_num/index/content/vector` 字段类型、`id` 主键和向量维度；它不会自动修补 Schema。
+4. 写入前使用 Strong consistency 按 `book_id` 查询已有 ID：完整同版本默认跳过，`error` 策略直接拒绝，部分同版本只能通过显式 `resume` 补齐；出现不属于当前稳定 ID 集合的旧数据时报版本冲突。不实现 replace/upsert/delete。
+5. 待写入块按默认 20 条一批调用 `embedDocuments()`，校验向量数量/维度/有限数值后调用 Milvus `insert`。失败仅返回安全错误类别和已确认进度，可用 `resume` 重试缺失 ID。
+
+**CLI**：`npm run ingest:epub -- <book.epub> --book-id <id>` 默认只解析/分块并输出计划；只有显式 `--execute` 才创建 Embedding/Milvus 客户端并执行写入。支持 `--book-name`、`--chunk-size`、`--chunk-overlap`、`--batch-size` 和 `--on-duplicate skip|error|resume`。
+
+**修改文件**：新增 `backend/src/rag/ebook/ingestion/`、`backend/src/cli/ingest-epub.js`、`backend/test/epub-ingestion.test.js`；更新 `backend/package.json`、锁文件和 `backend/README.md`。直接依赖锁定 `@lingo-reader/epub-parser@0.4.6`、`@langchain/textsplitters@1.0.2`、`html-to-text@9.0.5`。
+
+**测试结果**：`backend/` 下 `npm test` 通过 10 个文件、100 个测试声明；新增 15 项覆盖路径/章节解析 Mock、真实分块器、稳定 ID、Schema/维度、完整重复/冲突/部分恢复、批次进度和 CLI dry-run/execute 隔离。测试预加载仍显式关闭 LangSmith 外部追踪。
+
+**已知限制**：真实 EPUB 2/3 文件差异、DRM/加密内容、超大图书内存与 Milvus query limit 尚未验收。仓库没有创建 Collection 的 migration；实际 Collection 必须事先存在、可用且 Schema 兼容。批量 insert 不是跨批次事务，并发导入同一 `bookId` 也没有分布式锁；安全恢复依赖稳定 ID 和显式 `resume`。
+
+### 后续阶段（本阶段不实施）
+
 - **P4-B 生活笔记入库**：确定 PostgreSQL 或其他原始数据真源，笔记 CRUD、ES/Milvus 双索引同步、更新/删除一致性、统一 ID、租户隔离和错误补偿。
 - **P5 质量评测**：独立评测集、引用真实性、召回质量、Rerank 前后对比、代词改写和联网回退；“引用支持结论”在此验收。
 - **P6 接口与体验**：Node HTTP API、SSE 流式输出、CLI、简单 React 页面、来源跳转、执行轨迹与部署。
@@ -819,4 +840,4 @@ P3-0 已完成以下设计决策：
 - 当前 LangSmith 新旧 env 命名兼容；P3-3 已完成显式配置、默认关闭、默认 `metadata_only`、测试隔离和生活笔记默认阻断。真实 LangSmith 云端 trace 仍待授权验收。
 - 仓库没有可证明存在的生活笔记 ES/Milvus Schema 或当前实现；P3-4 只交付只读适配层和 Mock 验收，使用 RRF，严格双端租户过滤。
 
-P3-1、P3-2、P3-2.1、P3-2.2、P3-2.3、P3-3、P3-4 完成状态与限制见第 9 节；P3-4 已完成双知识库只读适配层、生活笔记 ES + Milvus RRF/可选 Rerank、严格 scope 隔离与 85/85 Mock 回归。真实生活笔记索引/mapping/检索质量、LangSmith 云端显示以及 P3-2.2 真实模型 coverage/答案忠实度仍待授权验收。
+P3-1～P3-4 完成状态与限制见第 9 节；P4-A 完成状态与真实验收边界见第 10 节。P4-A 已完成默认 dry-run 的 EPUB 入库 CLI/服务层、稳定 ID、重复/冲突/恢复策略、Schema 校验与 100/100 Mock 回归。真实 EPUB/Embedding/Milvus 写入、生活笔记索引/mapping/检索质量、LangSmith 云端显示以及 P3-2.2 真实模型 coverage/答案忠实度仍待授权验收。

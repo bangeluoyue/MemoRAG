@@ -6,6 +6,7 @@
   "description": "Minimal EPUB Agentic RAG backend for MemoRAG",
   "scripts": {
     "inspect:milvus": "node src/cli/inspect-milvus.js",
+    "ingest:epub": "node src/cli/ingest-epub.js",
     "chat": "node src/cli/chat.js",
     "test": "node --import ./test-support/setup.js --test"
   },
@@ -17,8 +18,11 @@
     "@langchain/core": "^1.2.17",
     "@langchain/langgraph": "^1.4.21",
     "@langchain/openai": "^1.6.2",
+    "@langchain/textsplitters": "1.0.2",
+    "@lingo-reader/epub-parser": "0.4.6",
     "@zilliz/milvus2-sdk-node": "^3.0.6",
     "dotenv": "^18.0.7",
+    "html-to-text": "9.0.5",
     "langsmith": "^0.10.11",
     "zod": "^4.6.5"
   }

@@ -1,6 +1,6 @@
 # MemoRAG backend — EPUB Agentic RAG 与只读生活笔记检索
 
-当前包含 EPUB 只读检索、LangGraph Agent 和终端问答，以及生活笔记的只读 Elasticsearch + Milvus 混合检索适配层。它不会创建、删除、重建或写入任何索引/Collection，也尚未实现生活笔记 CRUD 或问答 API。
+当前包含 EPUB 检索、入库 CLI/Service、LangGraph Agent 和终端问答，以及生活笔记的只读 Elasticsearch + Milvus 混合检索适配层。EPUB 入库只向已存在且 Schema 兼容的 Collection 执行 `insert`；不会创建、删除、重建、加载或覆盖 Collection，也尚未实现生活笔记 CRUD 或问答 API。
 
 ## 模块
 
@@ -13,10 +13,12 @@
 - `src/rag/shared/dashscope-reranker.js`：无副作用的 DashScope/Qwen Rerank HTTP 客户端。
 - `src/rag/retrieval/`：统一检索 scope、标准文档和 RRF 融合约定。
 - `src/rag/ebook/ebook-retriever.js`：EPUB Milvus/可选 Rerank 的通用接口兼容适配层。
+- `src/rag/ebook/ingestion/`：EPUB 解析、章节分块、稳定 ID、Collection Schema 校验、重复检查和批量入库。
 - `src/rag/notes/`：生活笔记 ES 关键词、Milvus 向量、RRF 和可选 Rerank 的只读检索实现。
 - `src/rag/ebook/index.js`：可被其他 Node.js 代码调用的 RAG 入口。
 - `src/cli/chat.js`：交互式或单次终端问答。
 - `src/cli/inspect-milvus.js`：只读显示 Collection Schema、行数、加载状态和索引。
+- `src/cli/ingest-epub.js`：默认 dry-run 的 EPUB 入库命令。
 
 ## 使用
 
@@ -26,6 +28,7 @@
 npm install
 npm test
 npm run inspect:milvus
+npm run ingest:epub -- ./book.epub --book-id demo-book
 npm run chat
 npm run chat -- "雁门关事件的主谋是谁？"
 ```
@@ -42,6 +45,27 @@ npm run chat -- "雁门关事件的主谋是谁？"
 - `EMBEDDING_DIMENSION`，现有集合为 `1024`
 
 生活笔记只读适配层使用 `ELASTICSEARCH_NODE`、`ELASTICSEARCH_NOTES_INDEX`、`MILVUS_NOTES_COLLECTION`、`NOTES_KEYWORD_K` 和 `NOTES_VECTOR_K`。这些默认值只是开发配置；仓库不声称真实索引、mapping 或 Collection Schema 已存在。
+
+## EPUB 入库
+
+先执行默认 dry-run，它只读取本地 EPUB、按 spine 提取章节并分块，不调用 Embedding，不连接 Milvus：
+
+```bash
+npm run ingest:epub -- ./book.epub --book-id demo-book
+```
+
+检查输出的书名、章节数和分块数后，仅在获得真实 Embedding/Milvus 写入授权后使用：
+
+```bash
+npm run ingest:epub -- ./book.epub \
+  --book-id demo-book \
+  --book-name "Demo Book" \
+  --execute
+```
+
+默认分块为 500 字符、50 字符重叠，Embedding/insert 批次为 20；可用 `--chunk-size`、`--chunk-overlap` 和 `--batch-size` 调整。写入字段为 `id/book_id/book_name/chapter_num/index/content/vector`，与 `MilvusBookRetriever` 直接兼容，向量维度必须与 `EMBEDDING_DIMENSION` 和既有 Collection Schema 同时一致。Collection 必须事先存在并可用；工具不自动创建、加载或修改它。
+
+分块 ID 基于 `bookId + chapterNum + chunkIndex + content` 的 SHA-256 稳定生成。完整重复导入默认跳过；部分导入默认报错，可在确认是同一分块版本后使用 `--on-duplicate resume` 只补齐缺失 ID。如已存在不同 ID 集合，则视为图书版本冲突并停止；不提供 replace/upsert/delete 模式。
 
 `ENABLE_WEB_SEARCH` 默认为 `false`。只有显式启用且配置 `BOCHA_API_KEY` 后，信息充分性评估节点才可以选择联网搜索。
 
