@@ -30,6 +30,8 @@ test("getConfig applies the EPUB RAG defaults", () => {
   assert.equal(config.langsmith.contentMode, "metadata_only");
   assert.equal(config.langsmith.noteTracingEnabled, false);
   assert.equal(config.notes.knowledgeBase, "life_notes");
+  assert.equal(config.notes.postgres.connectionString, "");
+  assert.equal(config.notes.postgres.ssl, false);
   assert.equal(config.notes.elasticsearch.node, "http://localhost:9200");
   assert.equal(config.notes.elasticsearch.indexName, "life_notes");
   assert.equal(config.notes.milvus.collectionName, "life_notes");
@@ -86,6 +88,8 @@ test("getConfig applies life-notes retrieval overrides", () => {
     NOTES_VECTOR_K: "25",
     ENABLE_NOTE_RERANK: "true",
     RERANK_URL: "https://rerank.example.test",
+    DATABASE_URL: "postgresql://example.test/memorag",
+    DATABASE_SSL: "true",
   });
   assert.equal(config.notes.elasticsearch.node, "https://elastic.example.test");
   assert.equal(config.notes.elasticsearch.indexName, "tenant_notes");
@@ -93,6 +97,8 @@ test("getConfig applies life-notes retrieval overrides", () => {
   assert.equal(config.notes.keywordK, 15);
   assert.equal(config.notes.vectorK, 25);
   assert.equal(config.notes.rerankEnabled, true);
+  assert.equal(config.notes.postgres.connectionString, "postgresql://example.test/memorag");
+  assert.equal(config.notes.postgres.ssl, true);
 });
 
 test("getConfig rejects an unsupported Rerank failure mode", () => {

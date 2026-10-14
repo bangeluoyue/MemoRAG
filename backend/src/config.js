@@ -112,6 +112,10 @@ export function getConfig(env = process.env) {
     },
     notes: {
       knowledgeBase: "life_notes",
+      postgres: {
+        connectionString: env.DATABASE_URL?.trim() || "",
+        ssl: booleanValue(env, "DATABASE_SSL", false),
+      },
       elasticsearch: {
         node: env.ELASTICSEARCH_NODE?.trim() || "http://localhost:9200",
         indexName: env.ELASTICSEARCH_NOTES_INDEX?.trim() || "life_notes",

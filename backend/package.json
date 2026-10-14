@@ -7,6 +7,7 @@
   "scripts": {
     "inspect:milvus": "node src/cli/inspect-milvus.js",
     "ingest:epub": "node src/cli/ingest-epub.js",
+    "notes": "node src/cli/notes.js",
     "chat": "node src/cli/chat.js",
     "test": "node --import ./test-support/setup.js --test"
   },
@@ -24,6 +25,7 @@
     "dotenv": "^18.0.7",
     "html-to-text": "9.0.5",
     "langsmith": "^0.10.11",
+    "pg": "8.23.1",
     "zod": "^4.6.5"
   }
 }

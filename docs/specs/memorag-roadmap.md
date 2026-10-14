@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v1.0（2026-10-14）
+> 版本：v1.1（2026-10-14）
 >
-> 状态：**P3-0～P3-4 与 P4-A 已完成；P4-A 的 100/100 Mock 回归通过，真实 EPUB 解析兼容性、Embedding 调用、Milvus Schema 和批量写入尚未授权验收。P3-4 生活笔记真实整合、P3-3 LangSmith 云端可见性、P3-2.2 真实模型 coverage 与答案忠实度仍待验收。**
+> 状态：**P3-0～P3-4、P4-A 与 P4-B 已完成；P4-B 的 118/118 Mock 回归通过，真实 PostgreSQL migration/CRUD、Embedding、ES/Milvus 写入与故障恢复尚未授权验收。P4-A 真实 EPUB 入库、P3-4 生活笔记真实检索整合、P3-3 LangSmith 云端可见性、P3-2.2 真实模型 coverage 与答案忠实度仍待验收。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -89,7 +89,7 @@ flowchart LR
 | Qwen Rerank | 仅 `legacy/hybrid/dashscope-rerank.mjs` | **未接入主线**。 |
 | EPUB 的 ES 混合检索 | 无代码、无索引定义 | **不存在**，本阶段也不设计为 EPUB 能力。 |
 | 生活笔记 ES + Milvus 检索 | 仅旧 Demo | **未产品化**；无当前适配层、配置、隔离或测试。 |
-| 生活笔记 CRUD / 原始存储 / 双写 | 无当前代码 | **未实现**，属于 P4-B。 |
+| 生活笔记 CRUD / 原始存储 / 双写 | `src/notes/`、`src/cli/notes.js`、`sql/001_create_life_notes.sql` | **P4-B 已完成 Mock 实现**；PostgreSQL 真相源、稳定 ID、ES/Milvus 同步、墓碑删除与显式重试已覆盖，真实写入未授权验收。 |
 | LangSmith | `observability/langsmith.js`、`config.js`、`ebook/index.js` | **P3-3 已完成显式接入**；默认关闭，支持 metadata-only 白名单、full 模式敏感字段屏蔽、测试隔离、Rerank 子 span 和 Client 失败降级。真实云端显示待授权验收。 |
 | EPUB 入库 | `src/rag/ebook/ingestion/`、`src/cli/ingest-epub.js` | **P4-A 已完成 Mock 实现**；默认 dry-run，只向已存在且 Schema 兼容的 `ebook_collection` 批量 insert，不创建/删除/加载/重建或覆盖 Collection。真实入库未验收。 |
 
@@ -792,7 +792,7 @@ flowchart LR
 
 **主要风险**：逻辑 ID 或租户字段在两个索引中不一致会造成误合并或越权；适配层必须 fail closed，不能用正文 hash 或后端局部 ID 猜测租户身份。
 
-## 10. P4-A 与后续阶段
+## 10. P4 数据入库阶段与后续规划
 
 ### P4-A：EPUB 数据入库
 
@@ -814,9 +814,28 @@ flowchart LR
 
 **已知限制**：真实 EPUB 2/3 文件差异、DRM/加密内容、超大图书内存与 Milvus query limit 尚未验收。仓库没有创建 Collection 的 migration；实际 Collection 必须事先存在、可用且 Schema 兼容。批量 insert 不是跨批次事务，并发导入同一 `bookId` 也没有分布式锁；安全恢复依赖稳定 ID 和显式 `resume`。
 
+### P4-B：生活笔记 CRUD 与 ES/Milvus 双索引同步
+
+**完成状态**：PostgreSQL Repository、CRUD Service、双索引同步、显式恢复 CLI、SQL migration、使用文档和 118/118 Mock 回归已完成，SDD 升级为 v1.1。本轮没有执行 migration，没有连接或修改真实 PostgreSQL、Elasticsearch、Milvus，没有调用真实 Embedding，也没有改动 EPUB 数据结构或 Agent 功能。
+
+**数据与同步流程**：
+
+1. PostgreSQL `life_notes` 是原始数据真相源，主键 `note_id` 默认由 UUID 生成，也允许调用方提供经过白名单校验的稳定 ID；所有读写都同时限定 `user_id` 与固定 `knowledge_base=life_notes`。
+2. 新增先插入 `pending/upsert`，修改在保留 `note_id` 的前提下更新原文并重置为 `pending/upsert`；随后为当前正文生成一次 Embedding，ES 使用同一 `note_id` 作为文档 `_id` 执行 `index`，Milvus 使用 `note_id/user_id/knowledge_base/title/content/metadata/vector` 执行 `upsert`。
+3. 写入字段严格沿用 P3-4 的读取契约：`note_id`、`user_id`、`knowledge_base`、`title`、`content`、`metadata` 和 `vector`；向量长度与 `EMBEDDING_DIMENSION` 一致。ES 与 Milvus 删除请求也同时包含 `note_id + user_id + knowledge_base`，避免跨租户清理。
+4. 删除先在 PostgreSQL 写 `pending/delete` 墓碑，使普通 get/list 不再返回该笔记；ES 与 Milvus 都删除成功后才硬删除 PostgreSQL 行。任何单端失败都会保留原始行或墓碑，并持久化 `failed`、`sync_operation`、`sync_attempts` 与安全错误类别。
+5. `retry(noteId, userId)` 按持久化操作类型幂等重放两个索引；同步返回值明确区分各目标的 `synced/failed/unknown`，不包含后端响应、连接信息、正文或凭证。没有消息队列、后台 worker 或分布式事务。
+
+**CLI 与安全边界**：`npm run notes -- create|get|list|update|delete|retry ...` 默认 dry-run，只进行本地参数校验，不创建客户端、不连接外部服务。只有显式 `--execute` 才会初始化 PostgreSQL、Embedding、ES 与 Milvus。`sql/001_create_life_notes.sql` 不会被应用或测试自动执行，必须在单独取得真实数据库建表授权后手工应用。
+
+**修改文件**：新增 `backend/src/notes/repository.js`、`index-synchronizer.js`、`service.js`、`index.js`、`backend/src/cli/notes.js`、`backend/sql/001_create_life_notes.sql` 和 `backend/test/notes-crud.test.js`；更新 `backend/src/config.js`、`.env.example`、`package.json`、锁文件、`backend/README.md`、配置测试与本 SDD。直接依赖锁定 `pg@8.23.1`。
+
+**测试结果**：在 `backend/` 执行 `npm test`，`test-support/setup.js` 继续显式关闭 LangSmith 新旧追踪开关；11 个测试文件、118 个测试声明全部通过。新增 18 项覆盖 P3-4 字段映射、Embedding/向量校验、ES/Milvus upsert/delete 的三字段隔离、单端失败、安全错误类别、稳定 ID、CRUD、墓碑、成功/失败删除、upsert/delete 重试、中断后已同步墓碑恢复、参数校验、CLI dry-run/execute 隔离，以及全量 Mock 依赖注入不读取配置或接管外部资源。原有 100 项 EPUB Agentic RAG、Rerank、LangSmith、P3-4 混合检索与 P4-A 入库回归继续通过。
+
+**已知限制**：同步采用“PostgreSQL 状态 + 两端幂等重放”的简单最终一致性方案，不是原子跨存储事务；失败到人工重试之间，ES/Milvus 可能短暂存在旧数据。本阶段没有后台自动重试、批量修复扫描、并发版本控制或操作历史表。真实 PostgreSQL 权限/DDL、ES mapping、Milvus `note_id` 主键与 JSON 字段、向量维度、upsert/delete 可见性及三存储部分故障恢复都尚未验收；实际 Schema 不符合 P3-4 契约时应停止联调，不自动创建、重建或覆盖索引/Collection。
+
 ### 后续阶段（本阶段不实施）
 
-- **P4-B 生活笔记入库**：确定 PostgreSQL 或其他原始数据真源，笔记 CRUD、ES/Milvus 双索引同步、更新/删除一致性、统一 ID、租户隔离和错误补偿。
 - **P5 质量评测**：独立评测集、引用真实性、召回质量、Rerank 前后对比、代词改写和联网回退；“引用支持结论”在此验收。
 - **P6 接口与体验**：Node HTTP API、SSE 流式输出、CLI、简单 React 页面、来源跳转、执行轨迹与部署。
 
@@ -840,4 +859,4 @@ P3-0 已完成以下设计决策：
 - 当前 LangSmith 新旧 env 命名兼容；P3-3 已完成显式配置、默认关闭、默认 `metadata_only`、测试隔离和生活笔记默认阻断。真实 LangSmith 云端 trace 仍待授权验收。
 - 仓库没有可证明存在的生活笔记 ES/Milvus Schema 或当前实现；P3-4 只交付只读适配层和 Mock 验收，使用 RRF，严格双端租户过滤。
 
-P3-1～P3-4 完成状态与限制见第 9 节；P4-A 完成状态与真实验收边界见第 10 节。P4-A 已完成默认 dry-run 的 EPUB 入库 CLI/服务层、稳定 ID、重复/冲突/恢复策略、Schema 校验与 100/100 Mock 回归。真实 EPUB/Embedding/Milvus 写入、生活笔记索引/mapping/检索质量、LangSmith 云端显示以及 P3-2.2 真实模型 coverage/答案忠实度仍待授权验收。
+P3-1～P3-4 完成状态与限制见第 9 节；P4-A/P4-B 完成状态与真实验收边界见第 10 节。P4-A 已完成默认 dry-run 的 EPUB 入库 CLI/服务层、稳定 ID、重复/冲突/恢复策略、Schema 校验与 Mock 回归；P4-B 已完成 PostgreSQL 真相源、稳定笔记 ID、ES/Milvus 双索引同步、墓碑删除和显式重试的 Mock 实现。真实 PostgreSQL migration/CRUD、Embedding/ES/Milvus 写入与恢复、EPUB 入库、生活笔记检索质量、LangSmith 云端显示以及 P3-2.2 真实模型 coverage/答案忠实度仍待授权验收。

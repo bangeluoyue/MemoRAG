@@ -1,6 +1,6 @@
-# MemoRAG backend — EPUB Agentic RAG 与只读生活笔记检索
+# MemoRAG backend — EPUB Agentic RAG 与生活笔记存储/检索
 
-当前包含 EPUB 检索、入库 CLI/Service、LangGraph Agent 和终端问答，以及生活笔记的只读 Elasticsearch + Milvus 混合检索适配层。EPUB 入库只向已存在且 Schema 兼容的 Collection 执行 `insert`；不会创建、删除、重建、加载或覆盖 Collection，也尚未实现生活笔记 CRUD 或问答 API。
+当前包含 EPUB 检索、入库 CLI/Service、LangGraph Agent 和终端问答，以及生活笔记 PostgreSQL CRUD 与 Elasticsearch + Milvus 双索引同步/混合检索。EPUB 入库只向已存在且 Schema 兼容的 Collection 执行 `insert`；生活笔记 migration 和真实 CRUD 都不会被测试或默认 CLI 自动执行。
 
 ## 模块
 
@@ -15,10 +15,13 @@
 - `src/rag/ebook/ebook-retriever.js`：EPUB Milvus/可选 Rerank 的通用接口兼容适配层。
 - `src/rag/ebook/ingestion/`：EPUB 解析、章节分块、稳定 ID、Collection Schema 校验、重复检查和批量入库。
 - `src/rag/notes/`：生活笔记 ES 关键词、Milvus 向量、RRF 和可选 Rerank 的只读检索实现。
+- `src/notes/`：生活笔记 PostgreSQL Repository、CRUD Service、ES/Milvus 索引同步和显式重试。
 - `src/rag/ebook/index.js`：可被其他 Node.js 代码调用的 RAG 入口。
 - `src/cli/chat.js`：交互式或单次终端问答。
 - `src/cli/inspect-milvus.js`：只读显示 Collection Schema、行数、加载状态和索引。
 - `src/cli/ingest-epub.js`：默认 dry-run 的 EPUB 入库命令。
+- `src/cli/notes.js`：默认 dry-run 的生活笔记 CRUD/索引重试命令。
+- `sql/001_create_life_notes.sql`：需单独授权执行的最小 PostgreSQL 表结构。
 
 ## 使用
 
@@ -29,6 +32,7 @@ npm install
 npm test
 npm run inspect:milvus
 npm run ingest:epub -- ./book.epub --book-id demo-book
+npm run notes -- create --user-id demo-user --content "演示笔记"
 npm run chat
 npm run chat -- "雁门关事件的主谋是谁？"
 ```
@@ -44,7 +48,7 @@ npm run chat -- "雁门关事件的主谋是谁？"
 - `MILVUS_BOOK_ID`，默认 `1`
 - `EMBEDDING_DIMENSION`，现有集合为 `1024`
 
-生活笔记只读适配层使用 `ELASTICSEARCH_NODE`、`ELASTICSEARCH_NOTES_INDEX`、`MILVUS_NOTES_COLLECTION`、`NOTES_KEYWORD_K` 和 `NOTES_VECTOR_K`。这些默认值只是开发配置；仓库不声称真实索引、mapping 或 Collection Schema 已存在。
+生活笔记使用 `DATABASE_URL`、`DATABASE_SSL`、`ELASTICSEARCH_NODE`、`ELASTICSEARCH_NOTES_INDEX`、`MILVUS_NOTES_COLLECTION`、`NOTES_KEYWORD_K` 和 `NOTES_VECTOR_K`。这些默认值只是开发配置；仓库不声称真实表、索引、mapping 或 Collection Schema 已存在。
 
 ## EPUB 入库
 
@@ -86,6 +90,29 @@ Rerank 会保留原始 `score`，并在来源对象中附加 `rerankScore`、`or
 笔记结果依赖两个索引共享的稳定 `note_id`；缺少 ID 的结果会 fail closed。ES `_score` 和 Milvus cosine 不直接比较，而是使用 `1 / (60 + rank)` 的 RRF 融合。`scores.keyword/vector/fusion/rerank` 和 `provenance` 分开保留。`ENABLE_NOTE_RERANK=true` 时复用同一 Qwen Rerank 客户端；默认关闭。
 
 可通过 `createNotesRetriever()` 获取只读适配器；`searchWithTrace()` 还会返回单源异常降级、双源异常、过滤数量和 Rerank 状态等安全诊断。当前仅经 Mock 验收，尚未在真实 ES/Milvus 上验证 mapping、字段一致性、租户过滤和检索质量。
+
+## 生活笔记 CRUD 与双索引同步
+
+PostgreSQL 是笔记原始数据真相源；`note_id` 默认使用 UUID，也可由调用方提供符合约束的稳定 ID。所有 Repository 操作都同时限定 `note_id/user_id/knowledge_base=life_notes`，ES 文档 `_id` 和 Milvus 主键字段 `note_id` 复用同一个 ID。新增和修改先将 PostgreSQL 行记为 `pending/upsert`，然后生成一次 Embedding，并行执行 ES `index` 与 Milvus `upsert`。删除先写 PostgreSQL 墓碑，使普通查询立即不可见；两个索引都清理成功后才硬删除墓碑。
+
+单端同步失败时，原始笔记（或删除墓碑）会以 `failed` 状态保留，记录 `sync_attempts`、`sync_operation` 和不含外部响应的安全错误类别。`retry` 会幂等重放两个索引；本实现不使用消息队列、后台 worker 或分布式事务。因此失败与重试之间可能短暂存在跨存储不一致，调用方必须检查返回的 `sync.status`。
+
+`sql/001_create_life_notes.sql` 只提供最小表结构，不会自动运行。只有获得真实数据库/Embedding/ES/Milvus 写入授权并确认三个存储的 Schema 后，才可手工执行 migration，再使用带 `--execute` 的 CLI：
+
+```bash
+# 默认仅校验参数，不连接任何外部服务
+npm run notes -- create --user-id demo-user --title "标题" --content "正文"
+
+# 以下命令会真实写入，必须事先取得授权
+npm run notes -- create --user-id demo-user --title "标题" --content "正文" --execute
+npm run notes -- update --user-id demo-user --note-id <note-id> --content "新正文" --execute
+npm run notes -- get --user-id demo-user --note-id <note-id> --execute
+npm run notes -- list --user-id demo-user --execute
+npm run notes -- delete --user-id demo-user --note-id <note-id> --execute
+npm run notes -- retry --user-id demo-user --note-id <note-id> --execute
+```
+
+当前只完成 Mock 验收；PostgreSQL migration、真实索引字段/主键、向量维度、真实写入可见性以及部分失败恢复均待授权联调。没有自动建 ES index 或 Milvus Collection，也不会修改 EPUB 数据结构。
 
 ## LangSmith 链路追踪
 
