@@ -28,6 +28,7 @@ export function createAgenticRagGraph({
   model,
   retriever,
   bookName,
+  knowledgeBase = "ebook",
   maxContextDocuments = 12,
   maxSubQuestions = 4,
   maxPlanRepairAttempts = 1,
@@ -61,16 +62,19 @@ export function createAgenticRagGraph({
   const { routeQuestionNode, prepareSingleRetrievalNode } = createRouteNodes({
     model,
     bookName,
+    knowledgeBase,
   });
   const decomposeQuestionNode = createDecomposeQuestionNode({
     model,
     bookName,
+    knowledgeBase,
     subQuestionLimit,
     planRepairLimit,
   });
   const rewriteSubQuestionNode = createRewriteSubQuestionNode({
     model,
     bookName,
+    knowledgeBase,
   });
   const retrieveNode = createRetrieveNode({ retriever, maxContextDocuments });
   const evaluateNode = createEvaluateNode({

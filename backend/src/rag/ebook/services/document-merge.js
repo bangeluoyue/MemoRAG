@@ -57,25 +57,46 @@ export function mergeUniqueDocuments(existingDocs = [], newDocs = [], limit = 24
 }
 
 export function buildLocalContext(documents = []) {
-  return documents.map((document, index) => [
-    `[本地${index + 1}]`,
-    `文档ID：${document.id}`,
-    `书名：${document.bookName}`,
-    `章节：${document.chapterNum}`,
-    `片段序号：${document.chunkIndex}`,
-    `相似度：${Number(document.score).toFixed(4)}`,
-    `内容：${document.content}`,
-  ].join("\n")).join("\n\n---------\n\n");
+  return documents.map((document, index) => {
+    if (document.knowledgeBase === "life_notes") {
+      return [
+        `[本地${index + 1}]`,
+        `笔记ID：${document.id}`,
+        `标题：${document.metadata?.title ?? ""}`,
+        `相关度：${Number(document.score ?? 0).toFixed(4)}`,
+        `内容：${document.content}`,
+      ].join("\n");
+    }
+    return [
+      `[本地${index + 1}]`,
+      `文档ID：${document.id}`,
+      `书名：${document.bookName}`,
+      `章节：${document.chapterNum}`,
+      `片段序号：${document.chunkIndex}`,
+      `相似度：${Number(document.score).toFixed(4)}`,
+      `内容：${document.content}`,
+    ].join("\n");
+  }).join("\n\n---------\n\n");
 }
 
 export function buildCompactLocalContext(
   documents = [],
   { maxDocuments = 6, maxContentCharacters = 600 } = {},
 ) {
-  return documents.slice(0, maxDocuments).map((document, index) => [
-    `[本地${index + 1}]`,
-    `文档ID：${document.id}`,
-    `章节：${document.chapterNum}，片段：${document.chunkIndex}`,
-    `内容：${String(document.content ?? "").slice(0, maxContentCharacters)}`,
-  ].join("\n")).join("\n\n---------\n\n");
+  return documents.slice(0, maxDocuments).map((document, index) => {
+    if (document.knowledgeBase === "life_notes") {
+      return [
+        `[本地${index + 1}]`,
+        `笔记ID：${document.id}`,
+        `标题：${document.metadata?.title ?? ""}`,
+        `内容：${String(document.content ?? "").slice(0, maxContentCharacters)}`,
+      ].join("\n");
+    }
+    return [
+      `[本地${index + 1}]`,
+      `文档ID：${document.id}`,
+      `章节：${document.chapterNum}，片段：${document.chunkIndex}`,
+      `内容：${String(document.content ?? "").slice(0, maxContentCharacters)}`,
+    ].join("\n");
+  }).join("\n\n---------\n\n");
 }

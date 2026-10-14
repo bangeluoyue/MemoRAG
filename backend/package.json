@@ -9,6 +9,7 @@
     "ingest:epub": "node src/cli/ingest-epub.js",
     "notes": "node src/cli/notes.js",
     "chat": "node src/cli/chat.js",
+    "start": "node src/http/server.js",
     "test": "node --import ./test-support/setup.js --test"
   },
   "engines": {

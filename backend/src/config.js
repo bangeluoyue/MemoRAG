@@ -96,6 +96,13 @@ export function getConfig(env = process.env) {
   }
 
   return {
+    http: {
+      host: env.HTTP_HOST?.trim() || "127.0.0.1",
+      port: boundedInteger(env, "HTTP_PORT", 3000, {
+        minimum: 1,
+        maximum: 65535,
+      }),
+    },
     model: {
       apiKey: modelApiKey,
       baseUrl: env.OPENAI_BASE_URL?.trim() || undefined,

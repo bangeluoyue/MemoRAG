@@ -11,6 +11,8 @@ const validEnv = {
 
 test("getConfig applies the EPUB RAG defaults", () => {
   const config = getConfig(validEnv);
+  assert.equal(config.http.host, "127.0.0.1");
+  assert.equal(config.http.port, 3000);
   assert.equal(config.milvus.collectionName, "ebook_collection");
   assert.equal(config.model.embeddingDimension, 1024);
   assert.equal(config.milvus.bookId, "1");
@@ -38,6 +40,19 @@ test("getConfig applies the EPUB RAG defaults", () => {
   assert.equal(config.notes.keywordK, 20);
   assert.equal(config.notes.vectorK, 20);
   assert.equal(config.notes.rerankEnabled, false);
+});
+
+test("getConfig validates HTTP listen settings", () => {
+  const config = getConfig({
+    ...validEnv,
+    HTTP_HOST: "localhost",
+    HTTP_PORT: "8080",
+  });
+  assert.deepEqual(config.http, { host: "localhost", port: 8080 });
+  assert.throws(
+    () => getConfig({ ...validEnv, HTTP_PORT: "70000" }),
+    /HTTP_PORT/u,
+  );
 });
 
 test("getConfig rejects an invalid embedding dimension", () => {

@@ -8,9 +8,13 @@ import {
 export function createDecomposeQuestionNode({
   model,
   bookName,
+  knowledgeBase = "ebook",
   subQuestionLimit,
   planRepairLimit,
 }) {
+  const sourceLabel = knowledgeBase === "life_notes"
+    ? "用户生活笔记"
+    : `《${bookName}》`;
   return async function decomposeQuestionNode(state) {
     const startedAt = Date.now();
     const decomposer = model.withStructuredOutput(DecomposeSchema);
@@ -28,7 +32,7 @@ export function createDecomposeQuestionNode({
       try {
         llmCalls += 1;
         const result = await decomposer.invoke(`
-你是《${bookName}》多跳问答的子问题拆解器。
+你是${sourceLabel}多跳问答的子问题拆解器。
 用户原始问题：${state.question}
 
 请输出有序的结构化检索计划，默认最多 ${subQuestionLimit} 项：

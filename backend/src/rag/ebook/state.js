@@ -4,6 +4,7 @@ import { createExecutionState } from "./services/execution.js";
 export const EbookRagState = Annotation.Root({
   question: Annotation(),
   bookId: Annotation(),
+  retrievalScope: Annotation(),
   k: Annotation(),
   strategy: Annotation(),
   routeMode: Annotation(),
@@ -40,7 +41,8 @@ export const EbookRagState = Annotation.Root({
 export function createInitialState(question, options) {
   return {
     question: String(question).trim(),
-    bookId: String(options.bookId),
+    bookId: String(options.bookId ?? ""),
+    retrievalScope: options.scope ?? null,
     k: options.k,
     strategy: "",
     routeMode: "",

@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v1.2（2026-10-14）
+> 版本：v1.3（2026-10-14）
 >
-> 状态：**P3-0～P3-4、P4-A 与 P4-B 已完成；P4-B 的 118/118 Mock 回归及本机 PostgreSQL + Elasticsearch + Milvus 真实 CRUD/混合检索联调均通过，2 条测试笔记已全部清理。P4-A 真实 EPUB 入库、P3-3 LangSmith 云端可见性、P3-2.2 真实模型 coverage 与答案忠实度仍待验收。**
+> 状态：**P3-0～P3-4、P4-A、P4-B 与 P6-A 已完成；P6-A 已提供最小 Node HTTP API、EPUB/生活笔记双问答入口及笔记 CRUD 路由，124/124 Mock 回归通过。HTTP 真实环境端到端、P4-A 真实 EPUB 入库、P3-3 LangSmith 云端可见性、P3-2.2 真实模型 coverage 与答案忠实度仍待验收。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -844,10 +844,31 @@ flowchart LR
 
 **已知限制**：同步采用“PostgreSQL 状态 + 两端幂等重放”的简单最终一致性方案，不是原子跨存储事务；失败到人工重试之间，ES/Milvus 可能短暂存在旧数据。本阶段没有后台自动重试、批量修复扫描、并发版本控制或操作历史表。本次已验证正常新增/修改/删除链路，但没有主动制造服务中断来做真实部分故障恢复；该能力仍以 Mock 和持久化重试状态为依据。生产或云环境仍未验收，实际部署不得自动删除、重建或覆盖已有索引/Collection。
 
+### P6-A：最小 Node HTTP API 与双知识库问答入口
+
+**完成状态**：代码、配置模板、README 和 124/124 Mock 回归已完成，SDD 升级为 v1.3。本轮没有启动真实 HTTP 服务，没有调用付费 LLM、Embedding、Rerank、联网搜索或 LangSmith，也没有连接或修改 PostgreSQL、Elasticsearch 和 Milvus。
+
+**实现与边界**：
+
+1. 使用 Node 内置 `node:http`，默认监听 `127.0.0.1:3000`；提供无外部探测的 `/health`、EPUB/生活笔记问答、笔记 CRUD 和同步重试接口。请求体限制为 256 KiB，实施必要的 JSON、问题、ID、知识库范围和 CRUD 参数校验；未知异常仅返回通用类别。
+2. EPUB 入口直接调用原有 `createEbookRag().ask(question, { bookId })`。Graph State 新增向后兼容的 `retrievalScope`，EPUB 仍同时保留原 `bookId` 行为与返回字段。
+3. 生活笔记此前只有独立 P3-4 Retriever，未接入完整 Agent；本阶段新增 `createNotesRag().ask(question, { userId })`，通过薄适配器把 `life_notes + userId` scope、RRF/Rerank 分数和检索 trace 送入现有同一套 LangGraph。三态路由、拆题、依赖改写、coverage、缺口恢复、联网预算、生成和引用校验均复用，没有复制第二套 Graph，也没有增加节点或 LLM 调用。
+4. 本地上下文按文档知识库呈现 EPUB 章节或生活笔记标题；两类问答共用最终 `answer/sources/webSources/route/trace` 映射。生活笔记来源额外公开稳定 `noteId`、`userId`、`knowledgeBase`、标题、四类分数和 provenance，引用编号仍来自同一份 citation snapshot。
+5. EPUB API 强制 `ebook + bookId`，生活笔记问答和 CRUD 固定 `life_notes + userId`；适配器会再次丢弃 scope 不匹配文档。`userId` 仅是调用方可填写的数据过滤字段，不构成身份认证，服务因此默认只监听本机；对外部署前必须由可信身份层绑定用户范围。
+6. 生活笔记问答继续复用 P3-3 的 notes 隐私开关：即使全局 LangSmith 开启，未显式开启 `ENABLE_NOTE_LANGSMITH_TRACING` 时仍不上传 notes trace。HTTP 错误响应和日志只保留安全类别，不回显外部响应、正文、连接信息或凭证。
+
+**接口**：`GET /health`；`POST /api/qa/ebook`；`POST /api/qa/notes`；`POST/GET /api/notes`；`GET/PATCH/DELETE /api/notes/:noteId`；`POST /api/notes/:noteId/retry`。本阶段不实现 SSE、React、复杂认证、管理后台、部署编排或新的 RAG 功能。
+
+**修改文件**：新增 `backend/src/http/app.js`、`server.js`、`backend/src/rag/notes/agent.js`、`agent-retriever.js`、`backend/src/rag/shared/agent-response.js`、`backend/test/http-api.test.js` 和 `notes-rag.test.js`；更新 Graph scope/知识源提示/本地上下文适配、EPUB 共享响应映射、配置模板、启动脚本、README、配置测试和本 SDD。
+
+**测试结果**：`backend/` 下完整 `npm test` 通过 13 个测试文件、124 个 `test()` 声明，0 失败；新增 6 项覆盖生活笔记完整 Agent 单跳链路与强制 scope、缺少 `userId` 拒绝、HTTP 健康检查、双问答参数传递与返回契约、CRUD/重试路由、跨知识库拒绝和内部错误脱敏。原有 118 项 EPUB Agentic RAG、引用、Rerank、LangSmith、混合检索、入库与 CRUD 回归继续通过。API 测试直接驱动 Node 请求/响应流，不监听端口且不访问外部服务。
+
+**已知限制与待验收**：尚未在真实本机服务上通过 HTTP 连接 LLM、PostgreSQL、ES 与 Milvus 做端到端问答/CRUD；生活笔记回答质量仍受 P3-2.2 coverage 非事实蕴含校验这一既有限制影响。当前没有认证、速率限制、TLS、CORS、SSE、分页游标或进程级就绪探测；`/health` 仅代表 Node 进程可处理请求。笔记同步仍是 P4-B 的简单最终一致性方案。
+
 ### 后续阶段（本阶段不实施）
 
 - **P5 质量评测**：独立评测集、引用真实性、召回质量、Rerank 前后对比、代词改写和联网回退；“引用支持结论”在此验收。
-- **P6 接口与体验**：Node HTTP API、SSE 流式输出、CLI、简单 React 页面、来源跳转、执行轨迹与部署。
+- **P6 后续接口与体验**：SSE 流式输出、简单 React 页面、来源跳转、可信身份接入与部署；需按独立任务确认后再实施。
 
 ## 11. 每次 Codex 修改协议
 

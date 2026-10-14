@@ -1,6 +1,6 @@
 # MemoRAG backend — EPUB Agentic RAG 与生活笔记存储/检索
 
-当前包含 EPUB 检索、入库 CLI/Service、LangGraph Agent 和终端问答，以及生活笔记 PostgreSQL CRUD 与 Elasticsearch + Milvus 双索引同步/混合检索。EPUB 入库只向已存在且 Schema 兼容的 Collection 执行 `insert`；生活笔记 migration 和真实 CRUD 都不会被测试或默认 CLI 自动执行。
+当前包含 EPUB 检索、入库 CLI/Service、LangGraph Agent 和终端问答，以及生活笔记 PostgreSQL CRUD、Elasticsearch + Milvus 双索引同步/混合检索和最小 Node HTTP API。EPUB 入库只向已存在且 Schema 兼容的 Collection 执行 `insert`；生活笔记 migration 和真实 CRUD 都不会被测试或默认 CLI 自动执行。
 
 ## 模块
 
@@ -14,8 +14,10 @@
 - `src/rag/retrieval/`：统一检索 scope、标准文档和 RRF 融合约定。
 - `src/rag/ebook/ebook-retriever.js`：EPUB Milvus/可选 Rerank 的通用接口兼容适配层。
 - `src/rag/ebook/ingestion/`：EPUB 解析、章节分块、稳定 ID、Collection Schema 校验、重复检查和批量入库。
-- `src/rag/notes/`：生活笔记 ES 关键词、Milvus 向量、RRF 和可选 Rerank 的只读检索实现。
+- `src/rag/notes/`：生活笔记 ES 关键词、Milvus 向量、RRF、可选 Rerank 和共享 LangGraph 的问答入口。
+- `src/rag/shared/agent-response.js`：两类知识库共用的 Agent 返回值和执行 trace 映射。
 - `src/notes/`：生活笔记 PostgreSQL Repository、CRUD Service、ES/Milvus 索引同步和显式重试。
+- `src/http/`：Node 内置 HTTP Server、双知识库问答和笔记 CRUD 路由。
 - `src/rag/ebook/index.js`：可被其他 Node.js 代码调用的 RAG 入口。
 - `src/cli/chat.js`：交互式或单次终端问答。
 - `src/cli/inspect-milvus.js`：只读显示 Collection Schema、行数、加载状态和索引。
@@ -35,6 +37,7 @@ npm run ingest:epub -- ./book.epub --book-id demo-book
 npm run notes -- create --user-id demo-user --content "演示笔记"
 npm run chat
 npm run chat -- "雁门关事件的主谋是谁？"
+npm start
 ```
 
 复制 `.env.example` 中需要的变量名到本地 `.env`。核心变量为：
@@ -49,6 +52,26 @@ npm run chat -- "雁门关事件的主谋是谁？"
 - `EMBEDDING_DIMENSION`，现有集合为 `1024`
 
 生活笔记使用 `DATABASE_URL`、`DATABASE_SSL`、`ELASTICSEARCH_NODE`、`ELASTICSEARCH_NOTES_INDEX`、`MILVUS_NOTES_COLLECTION`、`NOTES_KEYWORD_K` 和 `NOTES_VECTOR_K`。这些默认值只是开发配置；仓库不声称真实表、索引、mapping 或 Collection Schema 已存在。
+
+## HTTP API
+
+`npm start` 默认只监听 `127.0.0.1:3000`，可通过 `HTTP_HOST` 和 `HTTP_PORT` 显式调整。当前提供以下 JSON 接口：
+
+| 方法 | 路径 | 必要范围/用途 |
+| --- | --- | --- |
+| `GET` | `/health` | 进程存活检查；不主动探测外部依赖 |
+| `POST` | `/api/qa/ebook` | EPUB 问答；请求需包含 `question`、`bookId` |
+| `POST` | `/api/qa/notes` | 生活笔记问答；请求需包含 `question`、`userId` |
+| `POST` | `/api/notes` | 新增笔记；请求需包含 `userId`、`content`，`title` 可选 |
+| `GET` | `/api/notes?userId=...&limit=...` | 按用户列出笔记 |
+| `GET` | `/api/notes/:noteId?userId=...` | 查询单条笔记 |
+| `PATCH` | `/api/notes/:noteId` | 修改笔记；JSON 请求体包含 `userId` 和需修改字段 |
+| `DELETE` | `/api/notes/:noteId?userId=...` | 删除笔记并同步清理索引 |
+| `POST` | `/api/notes/:noteId/retry` | 重试同步；JSON 请求体包含 `userId` |
+
+问答成功响应保持 `answer`、`sources`、`webSources`、`route` 和 `trace`；其中 `trace.execution` 提供演示所需的节点、LLM、检索与 Rerank 次数。EPUB API 强制使用 `ebook + bookId` 范围，生活笔记 API 强制使用 `life_notes + userId` 范围，传入不匹配的 `knowledgeBase` 会被拒绝。
+
+`userId` 目前只是数据库和检索层的范围过滤参数，调用方可以自行填写，**不能替代身份认证或授权**。服务默认只监听本机正是为了限制这一演示阶段的暴露面；对外部署前必须增加可信身份层，并由服务端绑定 `userId`。未知内部异常只返回通用错误，不把数据库响应、连接信息或密钥发送给客户端。
 
 ## EPUB 入库
 

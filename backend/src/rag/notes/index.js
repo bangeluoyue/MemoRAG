@@ -84,3 +84,4 @@ export {
   HybridNotesRetriever,
   MilvusNotesRetriever,
 };
+export { AgentNotesRetriever } from "./agent-retriever.js";

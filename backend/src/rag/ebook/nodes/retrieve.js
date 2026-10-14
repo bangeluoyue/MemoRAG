@@ -16,17 +16,16 @@ export function createRetrieveNode({ retriever, maxContextDocuments }) {
 
     let retrievalResult;
     let errorCategory = null;
+    const retrievalOptions = {
+      k: state.k,
+      ...(state.bookId ? { bookId: state.bookId } : {}),
+      ...(state.retrievalScope ? { scope: state.retrievalScope } : {}),
+    };
     try {
       retrievalResult = typeof retriever.searchWithTrace === "function"
-        ? await retriever.searchWithTrace(query, {
-          k: state.k,
-          bookId: state.bookId,
-        })
+        ? await retriever.searchWithTrace(query, retrievalOptions)
         : {
-          documents: await retriever.search(query, {
-            k: state.k,
-            bookId: state.bookId,
-          }),
+          documents: await retriever.search(query, retrievalOptions),
           rerank: null,
         };
     } catch (error) {

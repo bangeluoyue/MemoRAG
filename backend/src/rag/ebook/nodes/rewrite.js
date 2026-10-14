@@ -9,7 +9,15 @@ import {
 import { updateExecution } from "../services/execution.js";
 import { normalizePlanQuestion } from "../services/planning.js";
 
-export function createRewriteSubQuestionNode({ model, bookName }) {
+export function createRewriteSubQuestionNode({
+  model,
+  bookName,
+  knowledgeBase = "ebook",
+}) {
+  const sourceLabel = knowledgeBase === "life_notes"
+    ? "用户生活笔记 RAG"
+    : `《${bookName}》RAG`;
+  const retrievalLabel = knowledgeBase === "life_notes" ? "检索" : "向量检索";
   return async function rewriteSubQuestionNode(state) {
     const startedAt = Date.now();
     const index = state.nextSubIdx ?? 0;
@@ -108,7 +116,7 @@ export function createRewriteSubQuestionNode({ model, bookName }) {
     try {
       const rewriter = model.withStructuredOutput(RewriteSchema);
       const result = await rewriter.invoke(`
-你是《${bookName}》RAG 的检索查询改写器。你的任务不是回答问题，而是判断当前子问题是否依赖前序检索结果，并生成适合向量检索的自包含查询。
+你是${sourceLabel} 的检索查询改写器。你的任务不是回答问题，而是判断当前子问题是否依赖前序检索结果，并生成适合${retrievalLabel}的自包含查询。
 
 用户原始问题：${state.question}
 当前待检索的原始子问题：${originalSubQuestion}
