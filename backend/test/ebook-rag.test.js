@@ -5,6 +5,7 @@ import { validateLocalCitations } from "../src/rag/ebook/agent-graph.js";
 import {
   AgentInvocationTimeoutError,
   ModelInvocationTimeoutError,
+  TIMEOUT_SOURCES,
 } from "../src/rag/shared/timeouts.js";
 
 class ApiTestModel {
@@ -325,6 +326,56 @@ class SlowRouteModel {
   }
 }
 
+class ThirdPartyTimeoutModel {
+  constructor(timeoutStage) {
+    this.timeoutStage = timeoutStage;
+  }
+
+  timeout() {
+    const error = new Error("sensitive upstream URL and response");
+    error.name = "TimeoutError";
+    throw error;
+  }
+
+  withStructuredOutput(schema) {
+    const keys = Object.keys(schema.shape);
+    if (keys.includes("mode")) {
+      return {
+        invoke: async () => {
+          if (this.timeoutStage === "route") this.timeout();
+          return { mode: "single_retrieval", reason: "单跳检索 Mock" };
+        },
+      };
+    }
+    return {
+      invoke: async () => {
+        if (this.timeoutStage === "evaluate") this.timeout();
+        return {
+          isSufficient: true,
+          coverage: [{
+            planIndex: 1,
+            hasRelevantEvidence: true,
+            isSufficient: true,
+            hasConflictingEvidence: false,
+            supportingEvidenceIndexes: [1],
+            missing: "",
+            reason: "Mock 证据充分",
+          }],
+          nextAction: "generate",
+          missing: [],
+          nextPlanItemAddressesGap: false,
+          reason: "Mock 证据充分",
+        };
+      },
+    };
+  }
+
+  async invoke() {
+    if (this.timeoutStage === "generate") this.timeout();
+    return { content: "不会用于超时断言" };
+  }
+}
+
 function createTestConfig() {
   return {
     model: {
@@ -567,7 +618,8 @@ test("a hanging model call stops at the configured stage timeout", async () => {
     () => rag.ask("模型超时测试"),
     (error) => error instanceof ModelInvocationTimeoutError
       && error.stage === "route"
-      && error.timeoutMs === 20,
+      && error.timeoutMs === 20
+      && error.timeoutSource === TIMEOUT_SOURCES.APPLICATION,
   );
   assert.ok(Date.now() - startedAt < 150);
 });
@@ -590,11 +642,48 @@ test("the whole-Agent deadline bounds cumulative graph latency", async () => {
     () => rag.ask("Agent 总时限测试"),
     (error) => error instanceof AgentInvocationTimeoutError
       && error.stage === "agent"
-      && error.timeoutMs === 15,
+      && error.timeoutMs === 15
+      && error.timeoutSource === TIMEOUT_SOURCES.APPLICATION,
   );
   assert.ok(Date.now() - startedAt < 150);
   assert.equal(model.invocationSignal?.aborted, true);
 });
+
+for (const stage of ["route", "evaluate", "generate"]) {
+  test(`a third-party TimeoutError is safely classified at ${stage}`, async () => {
+    const config = createTestConfig();
+    config.model.requestTimeoutMs = 60_000;
+    config.rag.agentTimeoutMs = 120_000;
+    const rag = createEbookRag({
+      config,
+      model: new ThirdPartyTimeoutModel(stage),
+      embeddings: {},
+      milvusClient: {},
+      retriever: {
+        async search() {
+          return [{
+            id: "timeout-evidence",
+            score: 0.9,
+            bookId: "1",
+            bookName: "天龙八部",
+            chapterNum: 1,
+            chunkIndex: 0,
+            content: "仅用于进入评估和生成节点的 Mock 文档。",
+          }];
+        },
+      },
+    });
+
+    await assert.rejects(
+      () => rag.ask("第三方超时分类测试"),
+      (error) => error instanceof ModelInvocationTimeoutError
+        && error.stage === stage
+        && error.timeoutMs === 60_000
+        && error.timeoutSource === TIMEOUT_SOURCES.SDK_OR_UPSTREAM
+        && !error.message.includes("sensitive"),
+    );
+  });
+}
 
 test("citation validator still rejects local reference 15 when 14 sources exist", () => {
   const result = validateLocalCitations("错误引用 [本地15]", 14);

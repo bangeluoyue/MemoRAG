@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v1.7（2026-10-14）
+> 版本：v1.8（2026-10-15）
 >
-> 状态：**P3-0～P3-4、P4-A、P4-B、P6-A、P6-B 与 P5-A 已完成；P5-B 已按最小真实验收方案启动，但 E1、E2 均在约 10.5 秒后被底层 `TimeoutError` 中止，按停止规则未继续 E3/N1。已定位第三方超时未被 P5-A 归一化、因而错误返回通用 500 且缺少 stage/部分 execution 的诊断缺口；现有证据不足以确定具体超时节点。最近一次完整回归仍为后端 129/129、前端 6/6。当前真实模型问答稳定性未达到演示验收标准。**
+> 状态：**P3-0～P3-4、P4-A、P4-B、P6-A、P6-B 与 P5-A 已完成；P5-B 真实验收仍未通过，但后续最小超时分类修复已完成。可信的 OpenAI/LangChain SDK 提前超时现统一返回安全 `504 MODEL_TIMEOUT`，保留实际模型节点 stage，并区分应用计时器与 SDK/上游来源；后端 137/137、前端 6/6 Mock 回归通过。约 10.5 秒限制的具体环境来源仍无充分证据，尚待一次受控真实复验。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -951,9 +951,23 @@ flowchart LR
 
 **已证实的代码缺口**：P5-A 的定时器能够把自身触发的超时转换为 `MODEL_TIMEOUT/AGENT_TIMEOUT`，但真实 SDK/模型端点在应用 60 秒期限之前抛出的 `TimeoutError` 会被原样向上传播。HTTP 只识别 MemoRAG 自定义超时类型，所以此次底层超时被错误映射为通用 500，并丢失了模型调用包装器本可附加的当前 stage。已安装的 `@langchain/openai` 代码确认应用传入的 60000 ms 会交给 OpenAI 客户端且客户端重试为 0；观察到的约 10 秒限制具体来自模型服务、代理还是网络层仍待环境侧核对，不能仅凭异常名称断言。
 
-**最小修复方案（本轮未实施）**：在共享模型调用包装器中把可信的第三方超时类别（如 SDK `TimeoutError`/连接超时）归一化为带当前 stage 的安全 `MODEL_TIMEOUT`，HTTP 返回 504；保留安全错误类别，不回显底层 message、URL 或凭据。增加“模型立即抛第三方 TimeoutError”的 Mock，验证 route/evaluate/generate 均保留 stage，且普通非超时异常仍返回 500。该修复只能改善分类和定位，不能解决上游约 10 秒即不可用的问题；环境或模型端点恢复后，E1/E2 才值得各复验一次，不应通过增加 Agent 等待时间或自动重试掩盖故障。
+**当轮建议的最小修复（当轮未实施，后续已在 v1.8 完成）**：在共享模型调用包装器中把可信的第三方超时类别（如 SDK `TimeoutError`/连接超时）归一化为带当前 stage 的安全 `MODEL_TIMEOUT`，HTTP 返回 504；保留安全错误类别，不回显底层 message、URL 或凭据。增加“模型立即抛第三方 TimeoutError”的 Mock，验证 route/evaluate/generate 均保留 stage，且普通非超时异常仍返回 500。该修复只能改善分类和定位，不能解决上游约 10 秒即不可用的问题；环境或模型端点恢复后，E1/E2 才值得各复验一次，不应通过增加 Agent 等待时间或自动重试掩盖故障。
 
 **演示结论**：当前 Mock 基线和本地数据服务仍稳定，但真实问答在首个 LLM 节点即连续失败，P5-B 无法进入 RAG 证据链，更无法验收语义引用和复杂问答。因此 MemoRAG 当前适合作为代码/Mock/数据链路展示，尚不满足“可稳定现场演示真实 AI 问答”的标准。后续应先完成上述最小超时归一化，并确认真实模型端点的 10 秒失败来源，再由用户授权继续剩余小规模验收。
+
+#### P5-B 后续：第三方模型超时分类修复
+
+**执行状态**：代码与 Mock 验收完成，真实模型复验未执行。没有调整 `LLM_TIMEOUT_MS=60000`、`AGENT_TIMEOUT_MS=120000` 或 `LLM_MAX_RETRIES=0`，没有调用真实 LLM、Embedding、Rerank、联网搜索或 LangSmith，也没有修改 Graph、coverage、检索、数据库与前端功能。
+
+**已证实的异常类型与修复**：当前安装版本为 `openai 7.32.0`、`@langchain/openai 1.6.2`。OpenAI SDK 的连接超时类型为 `APIConnectionTimeoutError`；当前 LangChain 适配层会把该类型转换为名称严格等于 `TimeoutError` 的普通 `Error`，而认证、限流和普通连接异常走其他分支。这与 P5-B 服务端记录的错误类别一致。共享 `invokeModelWithTimeout` 现只识别这两种可信形状，将其转换为不保留原始 message/cause 的 `MODEL_TIMEOUT`，并从调用包装器附加实际 stage。`APIConnectionError`、`AuthenticationError`、`RateLimitError` 及其他普通错误保持原分类，不会仅凭模糊消息文本被误判为超时。
+
+超时错误新增 `timeoutSource`：MemoRAG 自身计时器为 `application`，SDK 或上游在应用期限之前报告为 `sdk_or_upstream`。HTTP 对两者均返回 `504`，安全响应和服务端结构化日志只包含 `code/stage/timeoutMs/timeoutSource` 等非敏感诊断字段；其中 `timeoutMs` 是应用配置上限，不能被解释为上游实际超时阈值。原有成功响应与 RAG trace 接口没有变化。
+
+**约 10 秒限制的只读诊断**：已安装 OpenAI SDK 自身默认值为 10 分钟，但当前 ChatOpenAI 明确把应用的 60000 ms 传给底层客户端且 SDK 重试为 0。仓库模型调用路径没有另一个 10 秒 timeout、代理 Agent、dispatcher 或 fetch 包装；仓库中的 `RERANK_TIMEOUT_MS=10000` 仅属于本次已关闭的 Rerank。检查时进程环境和 `backend/.env` 都没有配置 HTTP/HTTPS/ALL/NO_PROXY 或 Node 环境代理开关；`OPENAI_BASE_URL` 是可解析、无内嵌凭证、无显式端口的外部非默认 HTTPS 地址。以上只能排除已见的 MemoRAG 配置和进程代理变量，不能区分远端兼容端点、其前置网关、DNS/TCP/TLS/传输层中的哪一层在约 10.5 秒终止请求，因此不修改任何网络参数。
+
+**测试与修改文件**：新增 route、evaluate、generate 三个第三方 `TimeoutError` Graph Mock、原始 `APIConnectionTimeoutError` Mock、三类非超时反例，以及 SDK/上游超时的安全 HTTP 504 Mock；原有应用级模型和 Agent 超时测试继续通过。完整结果为后端 14 个测试文件、137/137 Mock（含嵌套子测试），前端 2 个测试文件、6/6。修改 `backend/src/rag/shared/timeouts.js`、`backend/src/http/app.js`、`backend/test/ebook-rag.test.js`、`backend/test/http-api.test.js`、新增 `backend/test/timeouts.test.js`，同步更新 `backend/README.md` 与本 SDD。
+
+**仍需真实验证**：获得再次授权后只复验一个固定 EPUB 问题、不自动重试，记录 HTTP 状态、`stage`、`timeoutSource` 与客户端总耗时。若仍在约 10.5 秒返回 `sdk_or_upstream`，再结合对应时刻的兼容端点/网关访问日志判断限制所在；若端点侧没有请求记录，才进一步做不含凭证和正文的 DNS/TCP/TLS 最小连通性计时。该复验用于定位环境故障，不通过增加应用等待时间掩盖问题。
 
 ### 后续阶段（本阶段不实施）
 

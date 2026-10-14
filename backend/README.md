@@ -53,7 +53,7 @@ npm start
 - `MILVUS_BOOK_ID`，默认 `1`
 - `EMBEDDING_DIMENSION`，现有集合为 `1024`
 
-整次问答另受 `AGENT_TIMEOUT_MS` 限制，默认 `120000`。路由、拆题、改写、评估、生成和引用纠正都使用同一单次 LLM 上限；拆题或改写超时会沿用既有安全回退，路由、评估、首次生成或整次 Agent 超时则由 HTTP API 返回不含内部响应的 `504`，并通过 `error.stage` 标明超时阶段。该机制用于终止不可控等待，不会放宽证据充分性规则或增加检索预算。
+整次问答另受 `AGENT_TIMEOUT_MS` 限制，默认 `120000`。路由、拆题、改写、评估、生成和引用纠正都使用同一单次 LLM 上限；拆题或改写超时会沿用既有安全回退，路由、评估、首次生成或整次 Agent 超时则由 HTTP API 返回不含内部响应的 `504`，并通过 `error.stage` 标明超时阶段。`error.timeoutSource` 区分 MemoRAG 应用计时器触发的 `application` 与 SDK/上游提前报告的 `sdk_or_upstream`；`timeoutMs` 始终表示当前配置的应用上限，不代表上游实际采用的时限。该机制用于终止不可控等待，不会放宽证据充分性规则或增加检索预算。
 
 生活笔记使用 `DATABASE_URL`、`DATABASE_SSL`、`ELASTICSEARCH_NODE`、`ELASTICSEARCH_NOTES_INDEX`、`MILVUS_NOTES_COLLECTION`、`NOTES_KEYWORD_K` 和 `NOTES_VECTOR_K`。这些默认值只是开发配置；仓库不声称真实表、索引、mapping 或 Collection Schema 已存在。
 

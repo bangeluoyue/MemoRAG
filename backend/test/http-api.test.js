@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { createHttpHandler } from "../src/http/app.js";
 import { NotesServiceError } from "../src/notes/index.js";
-import { ModelInvocationTimeoutError } from "../src/rag/shared/timeouts.js";
+import {
+  invokeModelWithTimeout,
+  ModelInvocationTimeoutError,
+} from "../src/rag/shared/timeouts.js";
 
 function answer(label) {
   return {
@@ -241,6 +244,7 @@ test("HTTP API returns a safe 504 with the timed-out Agent stage", async () => {
         message: "问答处理超时，请缩小问题范围后重试",
         stage: "evaluate",
         timeoutMs: 60000,
+        timeoutSource: "application",
       },
     });
     assert.deepEqual(logged, [{
@@ -248,6 +252,53 @@ test("HTTP API returns a safe 504 with the timed-out Agent stage", async () => {
       errorCategory: "MODEL_TIMEOUT",
       method: "POST",
       path: "/api/qa/ebook",
+      stage: "evaluate",
+      timeoutSource: "application",
+    }]);
+  });
+});
+
+test("HTTP API returns a safe 504 for an SDK/upstream model timeout", async () => {
+  const logged = [];
+  await withApi(baseDependencies({
+    ebookRag: {
+      async ask() {
+        return invokeModelWithTimeout({
+          async invoke() {
+            const error = new Error(
+              "sensitive upstream URL, credential, and response",
+            );
+            error.name = "TimeoutError";
+            throw error;
+          },
+        }, "input", { stage: "generate", timeoutMs: 60000 });
+      },
+    },
+    logger: { error(event) { logged.push(event); } },
+  }), async (requestApi) => {
+    const response = await requestApi("/api/qa/ebook", {
+      method: "POST",
+      body: { question: "复杂问题", bookId: "book-1" },
+    });
+    assert.equal(response.status, 504);
+    const payload = await response.json();
+    assert.deepEqual(payload, {
+      error: {
+        code: "MODEL_TIMEOUT",
+        message: "问答处理超时，请缩小问题范围后重试",
+        stage: "generate",
+        timeoutMs: 60000,
+        timeoutSource: "sdk_or_upstream",
+      },
+    });
+    assert.doesNotMatch(JSON.stringify(payload), /sensitive|credential|URL/u);
+    assert.deepEqual(logged, [{
+      event: "http_request_failed",
+      errorCategory: "MODEL_TIMEOUT",
+      method: "POST",
+      path: "/api/qa/ebook",
+      stage: "generate",
+      timeoutSource: "sdk_or_upstream",
     }]);
   });
 });

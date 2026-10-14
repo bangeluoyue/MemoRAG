@@ -113,6 +113,7 @@ function publicError(error) {
       message: "问答处理超时，请缩小问题范围后重试",
       stage: error.stage,
       timeoutMs: error.timeoutMs,
+      timeoutSource: error.timeoutSource,
     };
   }
   return { code: "INTERNAL_ERROR", message: "服务暂时不可用" };
@@ -236,6 +237,10 @@ export function createHttpHandler({
             errorCategory: String(error?.code ?? error?.name ?? "Error"),
             method: request.method,
             path: url?.pathname ?? "",
+            ...(isRagTimeoutError(error) ? {
+              stage: error.stage,
+              timeoutSource: error.timeoutSource,
+            } : {}),
           });
         } catch {
           // Logging must not replace the safe HTTP response.
