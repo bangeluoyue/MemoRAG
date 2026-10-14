@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v1.4（2026-10-14）
+> 版本：v1.5（2026-10-14）
 >
-> 状态：**P3-0～P3-4、P4-A、P4-B、P6-A 与 P6-B 已完成；P6-B 已提供 React + Vite 双知识库演示界面，前端 6/6 Mock 测试、生产构建和后端 124/124 Mock 回归通过。前后端真实环境端到端、P4-A 真实 EPUB 入库、P3-3 LangSmith 云端可见性、P3-2.2 真实模型 coverage 与答案忠实度仍待验收。**
+> 状态：**P3-0～P3-4、P4-A、P4-B、P6-A 与 P6-B 已完成；P6-B 已通过本机 React → HTTP API → LangGraph → PostgreSQL/Elasticsearch/Milvus → 页面展示的最小真实单跳验收，前端 6/6 Mock 测试、生产构建和后端 124/124 Mock 回归继续通过。复杂/多部分真实问答的延迟与 coverage、P4-A 真实 EPUB 入库、P3-3 LangSmith 云端可见性及 P3-2.2 全面答案忠实度仍待验收。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -867,7 +867,7 @@ flowchart LR
 
 ### P6-B：最小可用 React 前端
 
-**完成状态**：React + Vite 演示界面、前端 API 客户端、组件测试和使用说明已完成，SDD 升级为 v1.4。前端 2 个测试文件、6 个测试声明全部通过，Vite 生产构建成功；后端 13 个测试文件、124 个测试声明继续全部通过。本轮没有调用真实 LLM、Embedding、Rerank、联网搜索或 LangSmith，没有连接或修改 PostgreSQL、Elasticsearch 和 Milvus。
+**完成状态**：React + Vite 演示界面、前端 API 客户端、组件测试和使用说明已完成，初始交付时 SDD 升级为 v1.4。后续于 2026-10-14 完成最小本机真实浏览器验收并升级为 v1.5。前端 2 个测试文件、6 个测试声明全部通过，Vite 生产构建成功；后端 13 个测试文件、124 个测试声明继续全部通过。
 
 **实现与边界**：
 
@@ -887,7 +887,18 @@ flowchart LR
 - 使用本地 Vite 静态开发服务完成桌面端视觉检查，知识库导航、EPUB 表单、范围提示、空状态和响应式布局显示正常；该检查没有启动后端或发起真实 API/付费调用。
 - `backend/` 下完整 `npm test`：13 个测试文件、124 个测试声明全部通过，确认前端新增工作区未改变既有 Agent、Retriever、CRUD 或 HTTP API 行为。
 
-**已知限制与待验收**：尚未用真实后端完成浏览器端 EPUB/生活笔记问答和 CRUD 的端到端联调；回答质量、长文本显示和部分同步故障仍沿用后端现有边界。当前没有后端书籍列表接口，所以 EPUB `bookId` 候选不是数据库发现结果；没有上传、登录认证、SSE、分页游标、部署配置或前端路由。生产部署必须增加可信身份层，将身份绑定到 `userId`，不能直接信任当前演示字段。
+**本机真实浏览器验收（2026-10-14）**：
+
+- 本机 Node API 和 Vite 页面能够启动；`GET /health` 返回 `ok`，Vite `/api` 代理通过真实笔记列表请求验证。Vite 按设计只代理 `/api`，不会代理 `/health`。模型、Embedding 和 Milvus 必要配置已存在；本地 `.env` 尚未配置 `DATABASE_URL`，验收时只在后端进程内从本机 PostgreSQL 容器安全注入连接串，没有输出凭据或修改 `.env`。
+- 启动时显式关闭 `ENABLE_WEB_SEARCH`、EPUB/生活笔记 Rerank、LangSmith/LangChain 新旧追踪开关和生活笔记追踪授权。没有修改或写入 `ebook_collection`；只读复核仍为 3042 行、已加载、1024 维 `IVF_FLAT + COSINE`。
+- 真实 Chrome 中以 `bookId=1` 提问“阿朱曾经乔装成谁去骗马夫人？”，完整通过 React → Vite proxy → HTTP API → LangGraph → Embedding/Milvus → 页面展示：`single_retrieval`、3 次 LLM、1 次本地检索、0 次 Rerank、0 次联网、约 19.0 秒；回答正确给出白世镜并包含合法本地引用，页面展示 2 条可展开原文来源和执行摘要。
+- 生活笔记使用专用 `userId` 创建 1 条非敏感临时笔记，真实新增、列表、详情、修改和删除均通过，新增/修改/删除同步状态均为 `synced`，修改保持同一 `note_id`。另一 `userId` 列表为 0，切换到 EPUB 页面时不显示笔记数据。以“MemoRAG 复盘安排在几点？”问答得到 `single_retrieval`、3 次 LLM、1 次本地检索、1 条稳定 `note_id` 来源、约 9.1 秒，回答和展开正文均反映修改后的“下午四点”。
+- 因首次多部分笔记问答超时后重试，本轮共创建过 2 条顺序执行、同内容的短期测试记录，任一时刻最多 1 条；两条均已删除。最终由 PostgreSQL API、Elasticsearch `_id` 和 Milvus `note_id + user_id + knowledge_base` 精确查询分别确认 0 条残留。
+- 真实验收发现两个未修复的质量/延迟现象：原问题“阿朱为什么要假扮段正淳？”一次 HTTP 200 但最终没有本地来源，而相同查询直连 Retriever 能在约 1 秒召回 5 条相关片段，表明缺口位于 Agent coverage/生成选择而非 Milvus；另一次强调书中证据的 EPUB 问答在客户端 5 分钟响应头超时，多部分生活笔记问答也在浏览器等待 180 秒后超时。两次均串行执行并通过重启后端取消，没有用提高预算或放宽证据约束掩盖问题。
+- 当前执行环境触发 inotify `ENOSPC`，使用 `CHOKIDAR_USEPOLLING=true npm run dev` 可完成浏览器验收；生产构建不受影响。页面唯一控制台 404 来自未提供的 `/favicon.ico`，不影响业务请求。本轮未为环境告警或装饰性图标修改业务代码。
+- 验收后再次运行 `frontend npm test`（6/6）、`frontend npm run build` 和显式关闭追踪的 `backend npm test`（124/124），全部通过。
+
+**已知限制与待验收**：最小单跳 EPUB、生活笔记问答及 CRUD 已完成真实浏览器验收，但复杂/多部分问题的长延迟、无来源 coverage 路径和真实答案忠实度仍未通过；需要单独诊断，不能以本次单跳结果代替。常规 `npm start` 要完整启用笔记能力，开发者仍需在被 Git 忽略的本地 `.env` 安全配置 `DATABASE_URL`。当前没有后端书籍列表接口，所以 EPUB `bookId` 候选不是数据库发现结果；没有上传、登录认证、SSE、分页游标、部署配置或前端路由。生产部署必须增加可信身份层，将身份绑定到 `userId`，不能直接信任当前演示字段。
 
 ### 后续阶段（本阶段不实施）
 
@@ -914,4 +925,4 @@ P3-0 已完成以下设计决策：
 - 当前 LangSmith 新旧 env 命名兼容；P3-3 已完成显式配置、默认关闭、默认 `metadata_only`、测试隔离和生活笔记默认阻断。真实 LangSmith 云端 trace 仍待授权验收。
 - P3-4 初始只交付只读适配层和 Mock 验收；P4-B 后续已在本机重建契约一致的生活笔记 ES/Milvus Schema，并真实验证 RRF 双源召回、稳定 ID 和严格双端租户过滤。生产环境与真实 Rerank 质量仍未验收。
 
-P3-1～P3-4 完成状态与限制见第 9 节；P4-A/P4-B、P6-A/P6-B 完成状态与真实验收边界见第 10 节。P4-A 已完成默认 dry-run 的 EPUB 入库 CLI/服务层、稳定 ID、重复/冲突/恢复策略、Schema 校验与 Mock 回归；P4-B 已完成 PostgreSQL 真相源、稳定笔记 ID、ES/Milvus 双索引同步、墓碑删除和显式重试，并通过本机真实 CRUD/混合检索验收；P6-A/P6-B 已提供 Node HTTP API 与 React 双知识库演示界面。生产环境、浏览器真实端到端、真实部分故障恢复、EPUB 入库、LangSmith 云端显示以及 P3-2.2 真实模型 coverage/答案忠实度仍待后续授权验收。
+P3-1～P3-4 完成状态与限制见第 9 节；P4-A/P4-B、P6-A/P6-B 完成状态与真实验收边界见第 10 节。P4-A 已完成默认 dry-run 的 EPUB 入库 CLI/服务层、稳定 ID、重复/冲突/恢复策略、Schema 校验与 Mock 回归；P4-B 已完成 PostgreSQL 真相源、稳定笔记 ID、ES/Milvus 双索引同步、墓碑删除和显式重试，并通过本机真实 CRUD/混合检索验收；P6-A/P6-B 已提供 Node HTTP API 与 React 双知识库演示界面，并完成本机最小单跳浏览器端到端验收。生产环境、复杂问答延迟与 coverage、真实部分故障恢复、EPUB 入库、LangSmith 云端显示以及 P3-2.2 全面答案忠实度仍待后续授权验收。
