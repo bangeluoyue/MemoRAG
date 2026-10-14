@@ -15,6 +15,8 @@ test("getConfig applies the EPUB RAG defaults", () => {
   assert.equal(config.http.port, 3000);
   assert.equal(config.milvus.collectionName, "ebook_collection");
   assert.equal(config.model.embeddingDimension, 1024);
+  assert.equal(config.model.requestTimeoutMs, 60000);
+  assert.equal(config.model.maxRetries, 0);
   assert.equal(config.milvus.bookId, "1");
   assert.equal(config.webSearch.enabled, false);
   assert.equal(config.rerank.enabled, false);
@@ -27,6 +29,7 @@ test("getConfig applies the EPUB RAG defaults", () => {
   assert.equal(config.rag.maxPlanRepairAttempts, 1);
   assert.equal(config.rag.maxSingleRetrievals, 2);
   assert.equal(config.rag.maxGapRecoveryAttempts, 1);
+  assert.equal(config.rag.agentTimeoutMs, 120000);
   assert.equal(config.langsmith.requested, false);
   assert.equal(config.langsmith.enabled, false);
   assert.equal(config.langsmith.contentMode, "metadata_only");
@@ -139,6 +142,30 @@ test("getConfig validates Agent planning and single-retrieval budgets", () => {
   assert.throws(
     () => getConfig({ ...validEnv, MAX_GAP_RECOVERY_ATTEMPTS: "2" }),
     /MAX_GAP_RECOVERY_ATTEMPTS/,
+  );
+});
+
+test("getConfig validates bounded LLM and whole-Agent timeouts", () => {
+  const config = getConfig({
+    ...validEnv,
+    LLM_TIMEOUT_MS: "45000",
+    LLM_MAX_RETRIES: "1",
+    AGENT_TIMEOUT_MS: "90000",
+  });
+  assert.equal(config.model.requestTimeoutMs, 45000);
+  assert.equal(config.model.maxRetries, 1);
+  assert.equal(config.rag.agentTimeoutMs, 90000);
+  assert.throws(
+    () => getConfig({ ...validEnv, LLM_TIMEOUT_MS: "999" }),
+    /LLM_TIMEOUT_MS/u,
+  );
+  assert.throws(
+    () => getConfig({ ...validEnv, LLM_MAX_RETRIES: "-1" }),
+    /LLM_MAX_RETRIES/u,
+  );
+  assert.throws(
+    () => getConfig({ ...validEnv, AGENT_TIMEOUT_MS: "600001" }),
+    /AGENT_TIMEOUT_MS/u,
   );
 });
 

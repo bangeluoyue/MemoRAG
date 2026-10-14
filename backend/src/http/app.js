@@ -1,4 +1,5 @@
 import { NotesServiceError, validateNotesCommandInput } from "../notes/index.js";
+import { isRagTimeoutError } from "../rag/shared/timeouts.js";
 
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 const DEFAULT_BODY_LIMIT = 256 * 1024;
@@ -93,6 +94,7 @@ function noteIdFromPath(pathname, suffix = "") {
 
 function statusForError(error) {
   if (error instanceof HttpError) return error.status;
+  if (isRagTimeoutError(error)) return 504;
   if (error instanceof NotesServiceError) {
     if (error.code === "NOTE_NOT_FOUND") return 404;
     if (error.code === "SYNC_NOT_PENDING") return 409;
@@ -104,6 +106,14 @@ function statusForError(error) {
 function publicError(error) {
   if (error instanceof HttpError || error instanceof NotesServiceError) {
     return { code: error.code, message: error.message };
+  }
+  if (isRagTimeoutError(error)) {
+    return {
+      code: error.code,
+      message: "问答处理超时，请缩小问题范围后重试",
+      stage: error.stage,
+      timeoutMs: error.timeoutMs,
+    };
   }
   return { code: "INTERNAL_ERROR", message: "服务暂时不可用" };
 }
@@ -219,11 +229,11 @@ export function createHttpHandler({
       throw new HttpError(404, "NOT_FOUND", "接口不存在");
     } catch (error) {
       const status = statusForError(error);
-      if (status === 500 && typeof logger?.error === "function") {
+      if (status >= 500 && typeof logger?.error === "function") {
         try {
           logger.error({
             event: "http_request_failed",
-            errorCategory: String(error?.name ?? "Error"),
+            errorCategory: String(error?.code ?? error?.name ?? "Error"),
             method: request.method,
             path: url?.pathname ?? "",
           });

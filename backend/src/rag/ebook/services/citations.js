@@ -1,4 +1,8 @@
 import { buildLocalContext } from "./document-merge.js";
+import {
+  AgentInvocationTimeoutError,
+  invokeModelWithTimeout,
+} from "../../shared/timeouts.js";
 
 const LOCAL_CITATION_PATTERN = /\[本地([0-9]+)\]/g;
 
@@ -58,16 +62,25 @@ export function removeInvalidLocalCitations(answer, sourceCount) {
     .trim();
 }
 
-export function createCitationGenerator({ model, citationCorrectionLimit }) {
+export function createCitationGenerator({
+  model,
+  citationCorrectionLimit,
+  modelTimeoutMs,
+}) {
   return async function generateWithValidatedCitations({
     prompt,
     question,
     context,
     citationDocuments,
+    signal,
   }) {
     const localSourceCount = citationDocuments.length;
     const initialStartedAt = Date.now();
-    const initialMessage = await model.invoke(prompt);
+    const initialMessage = await invokeModelWithTimeout(model, prompt, {
+      stage: "generate",
+      timeoutMs: modelTimeoutMs,
+      signal,
+    });
     const generationDurationMs = Date.now() - initialStartedAt;
     const initialAnswer = stringifyMessageContent(initialMessage.content).trim();
     const initialValidation = validateLocalCitations(initialAnswer, localSourceCount);
@@ -85,7 +98,7 @@ export function createCitationGenerator({ model, citationCorrectionLimit }) {
 
       const correctionStartedAt = Date.now();
       try {
-        const correctedMessage = await model.invoke(`
+        const correctedMessage = await invokeModelWithTimeout(model, `
 你是中文问答答案的引用纠正器。下面的回答包含不存在的本地引用编号，请使用同一份资料重新生成完整回答。
 
 用户原始问题：${question}
@@ -104,7 +117,11 @@ ${answer}
 2. 保留仍然有效且确有使用的引用；没有资料支持时明确说明资料不足。
 3. 网页引用不属于本次编号校验范围，不要把本地引用改成网页引用来规避校验。
 4. 只输出纠正后的完整回答，不要解释纠正过程。
-        `);
+        `, {
+          stage: "citationCorrection",
+          timeoutMs: modelTimeoutMs,
+          signal,
+        });
         citationCorrectionDurationMs += Date.now() - correctionStartedAt;
         const correctedAnswer = stringifyMessageContent(correctedMessage.content).trim();
         if (!correctedAnswer) {
@@ -113,8 +130,9 @@ ${answer}
         }
         answer = correctedAnswer;
         validation = validateLocalCitations(answer, localSourceCount);
-      } catch {
+      } catch (error) {
         citationCorrectionDurationMs += Date.now() - correctionStartedAt;
+        if (error instanceof AgentInvocationTimeoutError) throw error;
         correctionFailed = true;
         break;
       }

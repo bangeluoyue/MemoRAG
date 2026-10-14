@@ -11,6 +11,7 @@ import {
   normalizePlanQuestion,
   planItemForOriginalQuestion,
 } from "../services/planning.js";
+import { invokeModelWithTimeout } from "../../shared/timeouts.js";
 
 function unique(values) {
   return [...new Set(values)];
@@ -22,8 +23,9 @@ export function createEvaluateNode({
   gapRecoveryLimit,
   webSearch,
   maxWebSearches,
+  modelTimeoutMs,
 }) {
-  return async function evaluateNode(state) {
+  return async function evaluateNode(state, runnableConfig) {
     const startedAt = Date.now();
     const subQuestions = state.subQuestions ?? [];
     const planItems = state.planItems ?? [];
@@ -56,7 +58,7 @@ export function createEvaluateNode({
     const evaluationEvidence = buildEvaluationEvidence(state.retrievalHistory, 6);
 
     const evaluator = model.withStructuredOutput(EvaluateSchema);
-    const suggested = await evaluator.invoke(`
+    const suggested = await invokeModelWithTimeout(evaluator, `
 你是 RAG 的逐项证据覆盖评估器。你只能判断当前证据快照是否相关、是否足以支持答案，不得把“检索过”或“引用编号合法”当作“证据充分”。
 
 原始问题：${state.question}
@@ -85,7 +87,11 @@ ${compactWebContext(state.webContext) || "（空）"}
 8. nextAction 只是建议，系统仍会执行硬预算和逐项覆盖校验。联网内容不使用本地证据编号。
 
 仅在 web_search 时提供完整的 web_query。
-    `);
+    `, {
+      stage: "evaluate",
+      timeoutMs: modelTimeoutMs,
+      signal: runnableConfig?.signal,
+    });
 
     const coverage = normalizeCoverage({
       planItems: requiredPlanItems,

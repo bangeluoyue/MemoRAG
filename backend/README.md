@@ -46,10 +46,14 @@ npm start
 - `OPENAI_BASE_URL`
 - `MODEL_NAME`
 - `EMBEDDINGS_MODEL_NAME`
+- `LLM_TIMEOUT_MS`，单次 LLM 调用上限，默认 `60000`
+- `LLM_MAX_RETRIES`，LLM SDK 自动重试次数，默认 `0`
 - `MILVUS_ADDRESS`
 - `MILVUS_BOOK_COLLECTION`，默认 `ebook_collection`
 - `MILVUS_BOOK_ID`，默认 `1`
 - `EMBEDDING_DIMENSION`，现有集合为 `1024`
+
+整次问答另受 `AGENT_TIMEOUT_MS` 限制，默认 `120000`。路由、拆题、改写、评估、生成和引用纠正都使用同一单次 LLM 上限；拆题或改写超时会沿用既有安全回退，路由、评估、首次生成或整次 Agent 超时则由 HTTP API 返回不含内部响应的 `504`，并通过 `error.stage` 标明超时阶段。该机制用于终止不可控等待，不会放宽证据充分性规则或增加检索预算。
 
 生活笔记使用 `DATABASE_URL`、`DATABASE_SSL`、`ELASTICSEARCH_NODE`、`ELASTICSEARCH_NOTES_INDEX`、`MILVUS_NOTES_COLLECTION`、`NOTES_KEYWORD_K` 和 `NOTES_VECTOR_K`。这些默认值只是开发配置；仓库不声称真实表、索引、mapping 或 Collection Schema 已存在。
 
@@ -101,6 +105,8 @@ Agent 内部路由分为 `direct`、`single_retrieval` 和 `multi_hop`。书中�
 `MAX_CONTEXT_DOCUMENTS` 默认 12。充分性评估从各检索轮次平衡选取最多 6 条、每条最多 600 字符的证据，并逐计划项分别记录“是否检索、是否存在相关证据、是否足以支持答案”。计划执行完仍有缺口时，`MAX_GAP_RECOVERY_ATTEMPTS` 允许 0～1 次定向恢复（默认 1），且不会突破 `MAX_RETRIEVALS` 或单跳预算。预算耗尽后允许保留未解决项；生成器只接收 coverage 判定为充分的本地证据，并明确说明其余部分无法确认。
 
 coverage 是受限证据快照上的相关性/充分性判断，不是完整的事实蕴含证明，`contentSupportChecked` 仍为 `false`。`route.strategy` 保持 `simple|complex` 兼容，并新增 `route.mode`。`trace.coverage`、`trace.retrievals` 和 `trace.execution` 记录覆盖状态、实际查询、回退原因、节点耗时、LLM 分类调用/耗时以及 Embedding、向量检索、Rerank 分段耗时；这些 trace 不包含 prompt、正文或凭证。
+
+`trace.evidenceSelection` 只记录文档 ID 在“Retriever 召回、评估快照、充分证据选择、最终引用快照”四个阶段的集合与差异，不记录正文。Retriever 命中但最终 `sources` 为空时，可据此区分评估快照裁剪、coverage 判定未充分和引用快照映射异常；它不会把相关文档自动提升为充分证据。
 
 `ENABLE_RERANK` 默认为 `false`，关闭时保持原有 Milvus 检索行为且不会发起 Rerank 请求。启用时必须配置 `RERANK_URL`；Key 按 `RERANK_API_KEY`、`DASHSCOPE_API_KEY`、`OPENAI_API_KEY` 的顺序选择。`RERANK_CANDIDATE_K` 控制初始候选数，`RERANK_TOP_N` 控制默认最终文档数，而单次调用的 `askOptions.k` 优先。失败策略默认为 `RERANK_FAILURE_MODE=fallback`，会退回 Milvus 顺序；也可设为 `error` 直接抛错。
 

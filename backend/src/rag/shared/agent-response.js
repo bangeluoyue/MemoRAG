@@ -19,6 +19,65 @@ export function buildExecutionTrace(execution, finalContextDocumentCount) {
   };
 }
 
+function uniqueDocumentIds(values) {
+  return [...new Set(
+    values
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean),
+  )];
+}
+
+function difference(values, selected) {
+  const selectedIds = new Set(selected);
+  return values.filter((value) => !selectedIds.has(value));
+}
+
+export function buildEvidenceSelectionTrace(result) {
+  const retrievedDocumentIds = uniqueDocumentIds(
+    (result.retrievalHistory ?? []).flatMap((item) => item.documentIds ?? []),
+  );
+  const evaluationEvidenceDocumentIds = uniqueDocumentIds(
+    (result.evaluationEvidence ?? []).map((item) => item.documentId),
+  );
+  const sufficientEvidenceDocumentIds = uniqueDocumentIds(
+    (result.coverage ?? [])
+      .filter((item) => item.isSufficient)
+      .flatMap((item) => item.supportingDocumentIds ?? []),
+  );
+  const citationDocumentIds = uniqueDocumentIds(
+    (result.citationDocuments ?? []).map((item) => item.id),
+  );
+
+  return {
+    retrievedDocumentIds,
+    evaluationEvidenceDocumentIds,
+    sufficientEvidenceDocumentIds,
+    citationDocumentIds,
+    retrievedNotEvaluatedDocumentIds: difference(
+      retrievedDocumentIds,
+      evaluationEvidenceDocumentIds,
+    ),
+    evaluatedNotSelectedDocumentIds: difference(
+      evaluationEvidenceDocumentIds,
+      sufficientEvidenceDocumentIds,
+    ),
+    selectedNotCitedDocumentIds: difference(
+      sufficientEvidenceDocumentIds,
+      citationDocumentIds,
+    ),
+    coverage: (result.coverage ?? []).map((item) => ({
+      planIndex: item.planIndex,
+      status: item.status,
+      retrieved: Boolean(item.retrieved),
+      hasRelevantEvidence: Boolean(item.hasRelevantEvidence),
+      isSufficient: Boolean(item.isSufficient),
+      supportingDocumentIds: uniqueDocumentIds(
+        item.supportingDocumentIds ?? [],
+      ),
+    })),
+  };
+}
+
 export function buildAgentResponse(result, tracing, { mapSource } = {}) {
   const citationDocuments = result.citationDocuments ?? result.documents ?? [];
   const sourceMapper = mapSource ?? ((document) => ({ ...document }));
@@ -71,6 +130,7 @@ export function buildAgentResponse(result, tracing, { mapSource } = {}) {
       evaluation: result.evaluation,
       coverage: result.coverage ?? [],
       gapRecoveryCount: result.gapRecoveryCount ?? 0,
+      evidenceSelection: buildEvidenceSelectionTrace(result),
       citationValidation: result.citationValidation ?? null,
       execution: buildExecutionTrace(
         result.execution,

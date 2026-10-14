@@ -2,6 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createEbookRag } from "../src/rag/ebook/index.js";
 import { validateLocalCitations } from "../src/rag/ebook/agent-graph.js";
+import {
+  AgentInvocationTimeoutError,
+  ModelInvocationTimeoutError,
+} from "../src/rag/shared/timeouts.js";
 
 class ApiTestModel {
   constructor() {
@@ -251,6 +255,76 @@ class SingleHopMetricsModel {
   }
 }
 
+class RelevantButInsufficientModel {
+  withStructuredOutput(schema) {
+    const keys = Object.keys(schema.shape);
+    if (keys.includes("mode")) {
+      return {
+        invoke: async () => ({
+          mode: "single_retrieval",
+          reason: "需要书中证据",
+        }),
+      };
+    }
+    return {
+      invoke: async () => ({
+        isSufficient: false,
+        coverage: [{
+          planIndex: 1,
+          hasRelevantEvidence: true,
+          isSufficient: false,
+          hasConflictingEvidence: false,
+          supportingEvidenceIndexes: [1],
+          missing: "直接说明人物动机的原文",
+          reason: "片段与事件相关，但不能直接支持原因",
+        }],
+        nextAction: "generate",
+        missing: ["直接说明人物动机的原文"],
+        nextPlanItemAddressesGap: false,
+        reason: "当前证据相关但不充分",
+      }),
+    };
+  }
+
+  async invoke() {
+    return { content: "当前资料只能确认事件发生，具体原因尚无法确认。" };
+  }
+}
+
+class HangingRouteModel {
+  withStructuredOutput() {
+    return {
+      invoke: async (_input, { signal } = {}) => new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      }),
+    };
+  }
+}
+
+class SlowRouteModel {
+  constructor() {
+    this.invocationSignal = null;
+  }
+
+  withStructuredOutput() {
+    return {
+      invoke: async (_input, { signal } = {}) => new Promise((resolve) => {
+        this.invocationSignal = signal;
+        setTimeout(() => resolve({
+          mode: "direct",
+          reason: "慢速 Mock",
+        }), 50);
+      }),
+    };
+  }
+
+  async invoke() {
+    return { content: "不会执行到这里" };
+  }
+}
+
 function createTestConfig() {
   return {
     model: {
@@ -431,6 +505,95 @@ test("motivating question uses one retrieval and reports exact execution metrics
     JSON.stringify(result.trace.execution),
     /敏感正文哨兵|test-key/,
   );
+});
+
+test("trace explains why a retrieved EPUB document is absent from final sources", async () => {
+  const config = createTestConfig();
+  config.rag.maxGapRecoveryAttempts = 0;
+  const rag = createEbookRag({
+    config,
+    model: new RelevantButInsufficientModel(),
+    embeddings: {},
+    milvusClient: {},
+    retriever: {
+      async search() {
+        return [{
+          id: "related-but-insufficient",
+          score: 0.95,
+          bookId: "1",
+          bookName: "天龙八部",
+          chapterNum: 41,
+          chunkIndex: 2,
+          content: "阿朱假扮段正淳前去赴约，但本片段未说明她的动机。",
+        }];
+      },
+    },
+  });
+
+  const result = await rag.ask("阿朱为什么要假扮段正淳？");
+
+  assert.deepEqual(result.sources, []);
+  assert.match(result.answer, /无法确认/u);
+  assert.deepEqual(result.trace.evidenceSelection.retrievedDocumentIds, [
+    "related-but-insufficient",
+  ]);
+  assert.deepEqual(result.trace.evidenceSelection.evaluationEvidenceDocumentIds, [
+    "related-but-insufficient",
+  ]);
+  assert.deepEqual(result.trace.evidenceSelection.sufficientEvidenceDocumentIds, []);
+  assert.deepEqual(result.trace.evidenceSelection.citationDocumentIds, []);
+  assert.deepEqual(result.trace.evidenceSelection.evaluatedNotSelectedDocumentIds, [
+    "related-but-insufficient",
+  ]);
+  assert.equal(result.trace.evidenceSelection.coverage[0].status,
+    "relevant_but_insufficient");
+  assert.doesNotMatch(JSON.stringify(result.trace.evidenceSelection), /假扮|动机/u);
+});
+
+test("a hanging model call stops at the configured stage timeout", async () => {
+  const config = createTestConfig();
+  config.model.requestTimeoutMs = 20;
+  config.rag.agentTimeoutMs = 200;
+  const rag = createEbookRag({
+    config,
+    model: new HangingRouteModel(),
+    embeddings: {},
+    milvusClient: {},
+    retriever: { async search() { return []; } },
+  });
+
+  const startedAt = Date.now();
+  await assert.rejects(
+    () => rag.ask("模型超时测试"),
+    (error) => error instanceof ModelInvocationTimeoutError
+      && error.stage === "route"
+      && error.timeoutMs === 20,
+  );
+  assert.ok(Date.now() - startedAt < 150);
+});
+
+test("the whole-Agent deadline bounds cumulative graph latency", async () => {
+  const config = createTestConfig();
+  config.model.requestTimeoutMs = 200;
+  config.rag.agentTimeoutMs = 15;
+  const model = new SlowRouteModel();
+  const rag = createEbookRag({
+    config,
+    model,
+    embeddings: {},
+    milvusClient: {},
+    retriever: { async search() { return []; } },
+  });
+
+  const startedAt = Date.now();
+  await assert.rejects(
+    () => rag.ask("Agent 总时限测试"),
+    (error) => error instanceof AgentInvocationTimeoutError
+      && error.stage === "agent"
+      && error.timeoutMs === 15,
+  );
+  assert.ok(Date.now() - startedAt < 150);
+  assert.equal(model.invocationSignal?.aborted, true);
 });
 
 test("citation validator still rejects local reference 15 when 14 sources exist", () => {

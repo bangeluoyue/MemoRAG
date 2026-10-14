@@ -1,10 +1,16 @@
 import { RouteSchema } from "../schemas.js";
 import { updateExecution } from "../services/execution.js";
 import { planItemForOriginalQuestion } from "../services/planning.js";
+import { invokeModelWithTimeout } from "../../shared/timeouts.js";
 
-export function createRouteNodes({ model, bookName, knowledgeBase = "ebook" }) {
+export function createRouteNodes({
+  model,
+  bookName,
+  knowledgeBase = "ebook",
+  modelTimeoutMs,
+}) {
   const isLifeNotes = knowledgeBase === "life_notes";
-  const routeQuestionNode = async (state) => {
+  const routeQuestionNode = async (state, runnableConfig) => {
     const startedAt = Date.now();
     const router = model.withStructuredOutput(RouteSchema);
     const prompt = isLifeNotes ? `
@@ -26,7 +32,11 @@ export function createRouteNodes({ model, bookName, knowledgeBase = "ebook" }) {
 
 用户问题：${state.question}
     `;
-    const route = await router.invoke(prompt);
+    const route = await invokeModelWithTimeout(router, prompt, {
+      stage: "route",
+      timeoutMs: modelTimeoutMs,
+      signal: runnableConfig?.signal,
+    });
     const strategy = route.mode === "direct" ? "simple" : "complex";
 
     return {

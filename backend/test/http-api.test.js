@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { createHttpHandler } from "../src/http/app.js";
 import { NotesServiceError } from "../src/notes/index.js";
+import { ModelInvocationTimeoutError } from "../src/rag/shared/timeouts.js";
 
 function answer(label) {
   return {
@@ -215,6 +216,38 @@ test("HTTP API rejects cross-knowledge-base input and hides internal errors", as
       errorCategory: "Error",
       method: "POST",
       path: "/api/qa/notes",
+    }]);
+  });
+});
+
+test("HTTP API returns a safe 504 with the timed-out Agent stage", async () => {
+  const logged = [];
+  await withApi(baseDependencies({
+    ebookRag: {
+      async ask() {
+        throw new ModelInvocationTimeoutError("evaluate", 60000);
+      },
+    },
+    logger: { error(event) { logged.push(event); } },
+  }), async (requestApi) => {
+    const response = await requestApi("/api/qa/ebook", {
+      method: "POST",
+      body: { question: "复杂问题", bookId: "book-1" },
+    });
+    assert.equal(response.status, 504);
+    assert.deepEqual(await response.json(), {
+      error: {
+        code: "MODEL_TIMEOUT",
+        message: "问答处理超时，请缩小问题范围后重试",
+        stage: "evaluate",
+        timeoutMs: 60000,
+      },
+    });
+    assert.deepEqual(logged, [{
+      event: "http_request_failed",
+      errorCategory: "MODEL_TIMEOUT",
+      method: "POST",
+      path: "/api/qa/ebook",
     }]);
   });
 });

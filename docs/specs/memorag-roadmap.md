@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v1.5（2026-10-14）
+> 版本：v1.6（2026-10-14）
 >
-> 状态：**P3-0～P3-4、P4-A、P4-B、P6-A 与 P6-B 已完成；P6-B 已通过本机 React → HTTP API → LangGraph → PostgreSQL/Elasticsearch/Milvus → 页面展示的最小真实单跳验收，前端 6/6 Mock 测试、生产构建和后端 124/124 Mock 回归继续通过。复杂/多部分真实问答的延迟与 coverage、P4-A 真实 EPUB 入库、P3-3 LangSmith 云端可见性及 P3-2.2 全面答案忠实度仍待验收。**
+> 状态：**P3-0～P3-4、P4-A、P4-B、P6-A、P6-B 与 P5-A 已完成；P5-A 已为证据选择增加无正文诊断，并为单次 LLM 与整次 Agent 增加可配置的有限超时。后端 129/129、前端 6/6 Mock 回归及前端生产构建通过。复杂/多部分真实问答的修复效果、P4-A 真实 EPUB 入库、P3-3 LangSmith 云端可见性及 P3-2.2 全面答案忠实度仍待验收。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -899,6 +899,34 @@ flowchart LR
 - 验收后再次运行 `frontend npm test`（6/6）、`frontend npm run build` 和显式关闭追踪的 `backend npm test`（124/124），全部通过。
 
 **已知限制与待验收**：最小单跳 EPUB、生活笔记问答及 CRUD 已完成真实浏览器验收，但复杂/多部分问题的长延迟、无来源 coverage 路径和真实答案忠实度仍未通过；需要单独诊断，不能以本次单跳结果代替。常规 `npm start` 要完整启用笔记能力，开发者仍需在被 Git 忽略的本地 `.env` 安全配置 `DATABASE_URL`。当前没有后端书籍列表接口，所以 EPUB `bookId` 候选不是数据库发现结果；没有上传、登录认证、SSE、分页游标、部署配置或前端路由。生产部署必须增加可信身份层，将身份绑定到 `userId`，不能直接信任当前演示字段。
+
+### P5-A：复杂问题延迟和 EPUB 证据覆盖异常诊断
+
+**完成状态**：代码、配置模板、README 和确定性 Mock 回归已完成，SDD 升级为 v1.6。后端 13 个测试文件共 129 个测试声明、前端 6 个测试声明全部通过，前端生产构建成功。本轮未调用真实 LLM、Embedding、Rerank、联网搜索、LangSmith 或数据服务，未修改数据库及索引。
+
+**已证实的根因与边界**：
+
+1. `retrieveNode` 会把召回结果保存在 `documents/retrievalHistory`，`evaluateNode` 再从各轮召回中平衡选取最多 6 条进入 `evaluationEvidence`；`generateNode` 只从最终 `coverage.isSufficient=true` 项的 `supportingDocumentIds` 冻结 `citationDocuments`，HTTP `sources` 直接由该快照映射。因此来源不是在 HTTP 返回层意外丢失；“Retriever 有命中但 200 响应无来源”在当前规则下可能是相关文档未进入评估快照，或评估后被判为相关但不足/不支持。继续保留这一 fail-closed 行为，不为强制引用而伪造证据。
+2. v1.5 的失败响应没有保存本次 `evaluationEvidence/citationDocuments` 差异，因此不能反推那一次真实请求究竟属于快照裁剪、coverage 判定不充分，还是模型输出异常。该个案的精确原因仍待用 v1.6 trace 做一次最小真实复验；本文不把推测写成事实。
+3. 原代码虽然限制 Graph 检索/联网次数和 recursion limit，但所有路由、拆题、改写、评估、生成与引用纠正 LLM 调用均无应用级超时；`ChatOpenAI` 也未显式限制请求时长和自动重试。单个节点即可长期等待，循环预算不能约束节点内部耗时。这是 180/300 秒长等待能够发生的确定代码缺口。由于当时没有失败 trace，无法确认两个历史超时分别卡在哪个具体节点。
+
+**最小修复**：
+
+- 新增 `trace.evidenceSelection`，只记录文档 ID 在 Retriever 召回、评估快照、充分证据选择和最终引用快照四个阶段的集合，以及 `retrievedNotEvaluated/evaluatedNotSelected/selectedNotCited` 差异；同时保留逐计划项 `retrieved/hasRelevantEvidence/isSufficient/status/supportingDocumentIds`。该诊断不包含正文、prompt 或凭证，也不改变 coverage 决策。
+- 新增统一的可取消超时包装：`LLM_TIMEOUT_MS=60000` 限制每次 LLM 调用，`AGENT_TIMEOUT_MS=120000` 限制一次完整 Graph，`LLM_MAX_RETRIES=0` 避免 SDK 自动重试放大等待。三项均可配置并有边界校验；ChatOpenAI 底层请求和节点调用共用该限制，整次 Agent 的 `AbortSignal` 向 Graph 传递。
+- 拆题超时立即停止计划修复并沿用原始问题安全回退；依赖改写超时沿用不含内部占位符的完整原始问题回退；引用纠正超时继续移除非法引用。路由、证据评估、首次生成或整次 Agent 无法在期限内完成时终止请求，不生成未经评估的答案。
+- HTTP 将上述超时映射为安全 `504`，仅返回 `MODEL_TIMEOUT|AGENT_TIMEOUT`、`stage` 和配置时限，不回显模型响应、prompt、正文或连接信息。原有成功响应的 `answer/sources/webSources/route/trace` 字段保持兼容。
+
+**实际修改文件**：新增 `backend/src/rag/shared/timeouts.js`；更新 `backend/src/config.js`、`.env.example`、`src/http/app.js`、EPUB/notes RAG 入口、Graph 装配、route/decompose/rewrite/evaluate/generate/citations 节点服务、共享 response trace、backend README、相关 Mock 测试和本 SDD。没有改动 Prompt 语义、检索参数、coverage 规则、上下文裁剪数量、RRF/Rerank、数据库 Schema 或前端业务代码。
+
+**测试与证据**：
+
+- 新增“召回文档相关但证据不足”的回归：返回 `sources=[]` 且回答明确无法确认，同时 `evidenceSelection` 显示文档已召回、已进入评估但未被选入充分证据和引用快照，证明安全排除与返回层映射可被区分。
+- 新增悬挂 route Mock，20 ms 后稳定抛出 `MODEL_TIMEOUT` 且 `stage=route`；新增慢 route Mock，整次 Graph 在 15 ms 截止并抛出 `AGENT_TIMEOUT`。两者证明无需增加 recursion limit 或检索预算即可终止。
+- 新增 HTTP 504 脱敏和配置范围测试；原有三态路由、多跳依赖、coverage、引用校验、Rerank、LangSmith、双知识库、CRUD 与 API 回归继续通过。
+- 最终结果：后端 13 个文件共 129/129 测试声明通过；前端 6/6 通过；Vite 生产构建成功。Mock 测试仍通过预加载显式关闭 LangSmith，不访问外部服务。
+
+**已知限制与待真实验收**：本阶段证明了数据流、超时边界和诊断输出的确定性行为，但没有真实复跑“阿朱为什么要假扮段正淳？”或历史复杂问题，不能声称真实答案质量、具体慢节点或上游端点取消效果已验证。下次经明确授权的最小复验应保存 `trace.execution`、`trace.coverage`、`trace.evidenceSelection` 和超时响应的 `stage`；若来源仍为空，可直接定位为评估快照裁剪、coverage 未充分或引用映射异常。coverage 仍不是完整事实蕴含校验，超时只限制等待时间，不解决模型质量、召回质量或复杂问题本身的计算成本。
 
 ### 后续阶段（本阶段不实施）
 

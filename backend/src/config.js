@@ -109,6 +109,14 @@ export function getConfig(env = process.env) {
       chatModel: required(env, "MODEL_NAME"),
       embeddingModel: required(env, "EMBEDDINGS_MODEL_NAME"),
       embeddingDimension: positiveInteger(env, "EMBEDDING_DIMENSION", 1024),
+      requestTimeoutMs: boundedInteger(env, "LLM_TIMEOUT_MS", 60000, {
+        minimum: 1000,
+        maximum: 300000,
+      }),
+      maxRetries: boundedInteger(env, "LLM_MAX_RETRIES", 0, {
+        minimum: 0,
+        maximum: 5,
+      }),
     },
     milvus: {
       address: required(env, "MILVUS_ADDRESS"),
@@ -159,6 +167,10 @@ export function getConfig(env = process.env) {
         1,
         { minimum: 0, maximum: 1 },
       ),
+      agentTimeoutMs: boundedInteger(env, "AGENT_TIMEOUT_MS", 120000, {
+        minimum: 1000,
+        maximum: 600000,
+      }),
     },
     rerank: {
       enabled: rerankEnabled,

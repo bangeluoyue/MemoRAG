@@ -2,13 +2,18 @@ import { createCitationGenerator } from "../services/citations.js";
 import { buildLocalContext } from "../services/document-merge.js";
 import { updateExecution } from "../services/execution.js";
 
-export function createGenerateNodes({ model, citationCorrectionLimit }) {
+export function createGenerateNodes({
+  model,
+  citationCorrectionLimit,
+  modelTimeoutMs,
+}) {
   const generateWithValidatedCitations = createCitationGenerator({
     model,
     citationCorrectionLimit,
+    modelTimeoutMs,
   });
 
-  const directAnswerNode = async (state) => {
+  const directAnswerNode = async (state, runnableConfig) => {
     const startedAt = Date.now();
     const {
       generationLlmCalls,
@@ -25,6 +30,7 @@ export function createGenerateNodes({ model, citationCorrectionLimit }) {
       question: state.question,
       context: "",
       citationDocuments: [],
+      signal: runnableConfig?.signal,
     });
     return {
       ...generated,
@@ -43,7 +49,7 @@ export function createGenerateNodes({ model, citationCorrectionLimit }) {
     };
   };
 
-  const generateNode = async (state) => {
+  const generateNode = async (state, runnableConfig) => {
     const startedAt = Date.now();
     const supportedDocumentIds = new Set(
       (state.coverage ?? [])
@@ -102,6 +108,7 @@ ${coverageSummary || "（无需本地证据）"}
       question: state.question,
       context,
       citationDocuments,
+      signal: runnableConfig?.signal,
     });
     return {
       ...generated,

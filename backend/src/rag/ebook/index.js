@@ -12,6 +12,11 @@ import { EbookRetriever } from "./ebook-retriever.js";
 import { DashScopeReranker } from "../shared/dashscope-reranker.js";
 import { buildAgentResponse } from "../shared/agent-response.js";
 import { createBochaWebSearch } from "./web-search.js";
+import {
+  DEFAULT_AGENT_TIMEOUT_MS,
+  DEFAULT_LLM_TIMEOUT_MS,
+  invokeAgentWithTimeout,
+} from "../shared/timeouts.js";
 
 export function createEbookRag(options = {}) {
   const config = options.config ?? getConfig();
@@ -23,6 +28,8 @@ export function createEbookRag(options = {}) {
     model: config.model.chatModel,
     apiKey: config.model.apiKey,
     temperature: 0,
+    timeout: config.model.requestTimeoutMs ?? DEFAULT_LLM_TIMEOUT_MS,
+    maxRetries: config.model.maxRetries ?? 0,
     configuration: config.model.baseUrl
       ? { baseURL: config.model.baseUrl }
       : undefined,
@@ -75,6 +82,7 @@ export function createEbookRag(options = {}) {
     maxGapRecoveryAttempts: config.rag.maxGapRecoveryAttempts,
     webSearch,
     maxWebSearches: config.webSearch.maxSearches,
+    modelTimeoutMs: config.model.requestTimeoutMs ?? DEFAULT_LLM_TIMEOUT_MS,
   });
 
   return {
@@ -107,10 +115,17 @@ export function createEbookRag(options = {}) {
           knowledge_base: "ebook",
         },
       });
-      const result = await tracing.run(() => graph.invoke(initialState, {
-        recursionLimit,
-        runName: "ebook-agent-graph",
-      }));
+      const result = await tracing.run(() => invokeAgentWithTimeout(
+        graph,
+        initialState,
+        {
+          recursionLimit,
+          runName: "ebook-agent-graph",
+        },
+        {
+          timeoutMs: config.rag.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS,
+        },
+      ));
       return buildAgentResponse(result, tracing);
     },
 

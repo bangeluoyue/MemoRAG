@@ -8,17 +8,23 @@ import {
 } from "../services/evidence.js";
 import { updateExecution } from "../services/execution.js";
 import { normalizePlanQuestion } from "../services/planning.js";
+import {
+  AgentInvocationTimeoutError,
+  ModelInvocationTimeoutError,
+  invokeModelWithTimeout,
+} from "../../shared/timeouts.js";
 
 export function createRewriteSubQuestionNode({
   model,
   bookName,
   knowledgeBase = "ebook",
+  modelTimeoutMs,
 }) {
   const sourceLabel = knowledgeBase === "life_notes"
     ? "用户生活笔记 RAG"
     : `《${bookName}》RAG`;
   const retrievalLabel = knowledgeBase === "life_notes" ? "检索" : "向量检索";
-  return async function rewriteSubQuestionNode(state) {
+  return async function rewriteSubQuestionNode(state, runnableConfig) {
     const startedAt = Date.now();
     const index = state.nextSubIdx ?? 0;
     const originalSubQuestion = state.subQuestions?.[index]?.trim();
@@ -115,7 +121,7 @@ export function createRewriteSubQuestionNode({
 
     try {
       const rewriter = model.withStructuredOutput(RewriteSchema);
-      const result = await rewriter.invoke(`
+      const result = await invokeModelWithTimeout(rewriter, `
 你是${sourceLabel} 的检索查询改写器。你的任务不是回答问题，而是判断当前子问题是否依赖前序检索结果，并生成适合${retrievalLabel}的自包含查询。
 
 用户原始问题：${state.question}
@@ -133,7 +139,11 @@ ${formatRewriteEvidence(priorEvidence)}
 6. resolvedEntities 只填写实际补入查询的实体，而且实体文字必须直接出现在支持文档原文中。
 7. supportingEvidenceIndexes 只能填写上面给出的 [证据N] 编号，不得填写文档 ID；reason 仅用于调试，不属于事实证据。
 8. 必须保留原问题“谁、为什么、为何、如何、是否、哪里、多少”等疑问意图，不得把疑问改写为未经证实的事实断言。
-      `);
+      `, {
+        stage: "rewrite",
+        timeoutMs: modelTimeoutMs,
+        signal: runnableConfig?.signal,
+      });
       const decision = validateRewrite(originalSubQuestion, result, priorEvidence);
 
       if (!decision.valid || !decision.applied) {
@@ -180,11 +190,15 @@ ${formatRewriteEvidence(priorEvidence)}
           llmDurationMs: { rewrite: Date.now() - startedAt },
         }),
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof AgentInvocationTimeoutError) throw error;
+      const timedOut = error instanceof ModelInvocationTimeoutError;
       const fallback = useSafeFallback({
-        status: "fallback_model_error",
-        reason: "改写模型调用失败，已回退到原始完整问题",
-        failureCode: "rewrite_model_error",
+        status: timedOut ? "fallback_model_timeout" : "fallback_model_error",
+        reason: timedOut
+          ? "改写模型调用超时，已回退到原始完整问题"
+          : "改写模型调用失败，已回退到原始完整问题",
+        failureCode: timedOut ? "rewrite_model_timeout" : "rewrite_model_error",
       });
       return {
         ...fallback,

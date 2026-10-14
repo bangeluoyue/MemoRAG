@@ -37,6 +37,7 @@ export function createAgenticRagGraph({
   webSearch = null,
   maxWebSearches = 2,
   maxCitationCorrectionAttempts = 1,
+  modelTimeoutMs,
 }) {
   const citationCorrectionLimit = Math.max(
     0,
@@ -63,6 +64,7 @@ export function createAgenticRagGraph({
     model,
     bookName,
     knowledgeBase,
+    modelTimeoutMs,
   });
   const decomposeQuestionNode = createDecomposeQuestionNode({
     model,
@@ -70,11 +72,13 @@ export function createAgenticRagGraph({
     knowledgeBase,
     subQuestionLimit,
     planRepairLimit,
+    modelTimeoutMs,
   });
   const rewriteSubQuestionNode = createRewriteSubQuestionNode({
     model,
     bookName,
     knowledgeBase,
+    modelTimeoutMs,
   });
   const retrieveNode = createRetrieveNode({ retriever, maxContextDocuments });
   const evaluateNode = createEvaluateNode({
@@ -83,11 +87,13 @@ export function createAgenticRagGraph({
     gapRecoveryLimit,
     webSearch,
     maxWebSearches,
+    modelTimeoutMs,
   });
   const webSearchNode = createWebSearchNode({ webSearch });
   const { directAnswerNode, generateNode } = createGenerateNodes({
     model,
     citationCorrectionLimit,
+    modelTimeoutMs,
   });
 
   return new StateGraph(EbookRagState)

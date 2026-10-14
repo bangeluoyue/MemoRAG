@@ -4,6 +4,11 @@ import {
   planItemForOriginalQuestion,
   validateQuestionPlan,
 } from "../services/planning.js";
+import {
+  AgentInvocationTimeoutError,
+  ModelInvocationTimeoutError,
+  invokeModelWithTimeout,
+} from "../../shared/timeouts.js";
 
 export function createDecomposeQuestionNode({
   model,
@@ -11,11 +16,12 @@ export function createDecomposeQuestionNode({
   knowledgeBase = "ebook",
   subQuestionLimit,
   planRepairLimit,
+  modelTimeoutMs,
 }) {
   const sourceLabel = knowledgeBase === "life_notes"
     ? "用户生活笔记"
     : `《${bookName}》`;
-  return async function decomposeQuestionNode(state) {
+  return async function decomposeQuestionNode(state, runnableConfig) {
     const startedAt = Date.now();
     const decomposer = model.withStructuredOutput(DecomposeSchema);
     const failureReasons = [];
@@ -31,7 +37,7 @@ export function createDecomposeQuestionNode({
 
       try {
         llmCalls += 1;
-        const result = await decomposer.invoke(`
+        const result = await invokeModelWithTimeout(decomposer, `
 你是${sourceLabel}多跳问答的子问题拆解器。
 用户原始问题：${state.question}
 
@@ -43,7 +49,11 @@ export function createDecomposeQuestionNode({
 5. introducedAssumptions 必须列出计划新引入但用户没有提供、证据也尚未确认的事实前提；正常计划应为空数组。
 6. 不得输出重复问题，不得超过 ${subQuestionLimit} 项。
 ${repairInstructions}
-        `);
+        `, {
+          stage: "decompose",
+          timeoutMs: modelTimeoutMs,
+          signal: runnableConfig?.signal,
+        });
         resultReason = result.reason;
         const validation = validateQuestionPlan(
           result.sub_questions,
@@ -54,7 +64,12 @@ ${repairInstructions}
           break;
         }
         failureReasons.push(validation.errors);
-      } catch {
+      } catch (error) {
+        if (error instanceof AgentInvocationTimeoutError) throw error;
+        if (error instanceof ModelInvocationTimeoutError) {
+          failureReasons.push(["拆题模型调用超时，已停止计划修复并安全回退"]);
+          break;
+        }
         failureReasons.push(["拆题模型未返回可校验的结构化计划"]);
       }
 
