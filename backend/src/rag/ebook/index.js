@@ -83,6 +83,7 @@ export function createEbookRag(options = {}) {
     webSearch,
     maxWebSearches: config.webSearch.maxSearches,
     modelTimeoutMs: config.model.requestTimeoutMs ?? DEFAULT_LLM_TIMEOUT_MS,
+    diagnosticLogger: options.diagnosticLogger,
   });
 
   return {

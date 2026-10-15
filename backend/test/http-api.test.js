@@ -228,7 +228,18 @@ test("HTTP API returns a safe 504 with the timed-out Agent stage", async () => {
   await withApi(baseDependencies({
     ebookRag: {
       async ask() {
-        throw new ModelInvocationTimeoutError("evaluate", 60000);
+        throw new ModelInvocationTimeoutError("evaluate", 60000, {
+          timeoutDiagnostics: {
+            routeMode: "single_retrieval",
+            retrievalCount: 1,
+            evaluationDocumentIds: ["doc-1", "doc-2"],
+            evaluationDocumentCount: 2,
+            requiredPlanItemCount: 1,
+            inputCharacterCount: 4321,
+            modelCallStartedAtMs: 123456789,
+            prompt: "sensitive prompt must not be logged",
+          },
+        });
       },
     },
     logger: { error(event) { logged.push(event); } },
@@ -254,7 +265,17 @@ test("HTTP API returns a safe 504 with the timed-out Agent stage", async () => {
       path: "/api/qa/ebook",
       stage: "evaluate",
       timeoutSource: "application",
+      timeoutDiagnostics: {
+        routeMode: "single_retrieval",
+        retrievalCount: 1,
+        evaluationDocumentIds: ["doc-1", "doc-2"],
+        evaluationDocumentCount: 2,
+        requiredPlanItemCount: 1,
+        inputCharacterCount: 4321,
+        modelCallStartedAtMs: 123456789,
+      },
     }]);
+    assert.doesNotMatch(JSON.stringify(logged), /sensitive prompt/u);
   });
 });
 

@@ -119,6 +119,39 @@ function publicError(error) {
   return { code: "INTERNAL_ERROR", message: "服务暂时不可用" };
 }
 
+function safeTimeoutDiagnostics(error) {
+  if (!isRagTimeoutError(error) || error.stage !== "evaluate") return null;
+  const diagnostics = error.timeoutDiagnostics;
+  if (!diagnostics || typeof diagnostics !== "object") return null;
+  const nonNegativeInteger = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
+  };
+  const routeMode = ["direct", "single_retrieval", "multi_hop"]
+    .includes(diagnostics.routeMode)
+    ? diagnostics.routeMode
+    : "unknown";
+  return {
+    routeMode,
+    retrievalCount: nonNegativeInteger(diagnostics.retrievalCount),
+    evaluationDocumentIds: Array.isArray(diagnostics.evaluationDocumentIds)
+      ? diagnostics.evaluationDocumentIds
+        .slice(0, 6)
+        .map((value) => String(value).slice(0, 128))
+      : [],
+    evaluationDocumentCount: nonNegativeInteger(
+      diagnostics.evaluationDocumentCount,
+    ),
+    requiredPlanItemCount: nonNegativeInteger(
+      diagnostics.requiredPlanItemCount,
+    ),
+    inputCharacterCount: nonNegativeInteger(diagnostics.inputCharacterCount),
+    modelCallStartedAtMs: nonNegativeInteger(
+      diagnostics.modelCallStartedAtMs,
+    ),
+  };
+}
+
 function validatedUserId(value) {
   return validateNotesCommandInput("list", { userId: value, limit: 1 }).userId;
 }
@@ -232,6 +265,7 @@ export function createHttpHandler({
       const status = statusForError(error);
       if (status >= 500 && typeof logger?.error === "function") {
         try {
+          const timeoutDiagnostics = safeTimeoutDiagnostics(error);
           logger.error({
             event: "http_request_failed",
             errorCategory: String(error?.code ?? error?.name ?? "Error"),
@@ -240,6 +274,7 @@ export function createHttpHandler({
             ...(isRagTimeoutError(error) ? {
               stage: error.stage,
               timeoutSource: error.timeoutSource,
+              ...(timeoutDiagnostics ? { timeoutDiagnostics } : {}),
             } : {}),
           });
         } catch {

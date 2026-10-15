@@ -24,6 +24,7 @@ export function createEvaluateNode({
   webSearch,
   maxWebSearches,
   modelTimeoutMs,
+  diagnosticLogger = null,
 }) {
   return async function evaluateNode(state, runnableConfig) {
     const startedAt = Date.now();
@@ -58,7 +59,7 @@ export function createEvaluateNode({
     const evaluationEvidence = buildEvaluationEvidence(state.retrievalHistory, 6);
 
     const evaluator = model.withStructuredOutput(EvaluateSchema);
-    const suggested = await invokeModelWithTimeout(evaluator, `
+    const evaluationPrompt = `
 你是 RAG 的逐项证据覆盖评估器。你只能判断当前证据快照是否相关、是否足以支持答案，不得把“检索过”或“引用编号合法”当作“证据充分”。
 
 原始问题：${state.question}
@@ -87,10 +88,31 @@ ${compactWebContext(state.webContext) || "（空）"}
 8. nextAction 只是建议，系统仍会执行硬预算和逐项覆盖校验。联网内容不使用本地证据编号。
 
 仅在 web_search 时提供完整的 web_query。
-    `, {
+    `;
+    const timeoutDiagnostics = {
+      routeMode: String(state.routeMode ?? ""),
+      retrievalCount: Number(state.retrievalCount ?? 0),
+      evaluationDocumentIds: evaluationEvidence.map((item) => (
+        String(item.documentId)
+      )),
+      evaluationDocumentCount: evaluationEvidence.length,
+      requiredPlanItemCount: requiredPlanItems.length,
+      inputCharacterCount: evaluationPrompt.length,
+      modelCallStartedAtMs: Date.now(),
+    };
+    try {
+      diagnosticLogger?.info?.({
+        event: "evaluate_model_call_started",
+        ...timeoutDiagnostics,
+      });
+    } catch {
+      // Diagnostics must never affect the RAG result.
+    }
+    const suggested = await invokeModelWithTimeout(evaluator, evaluationPrompt, {
       stage: "evaluate",
       timeoutMs: modelTimeoutMs,
       signal: runnableConfig?.signal,
+      timeoutDiagnostics,
     });
 
     const coverage = normalizeCoverage({

@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v1.9（2026-10-15）
+> 版本：v1.10（2026-10-15）
 >
-> 状态：**P3-0～P3-4、P4-A、P4-B、P6-A、P6-B 与 P5-A 已完成；P5-B 超时分类修复完成。Clash 切回规则模式后，E1 已真实通过并得到正确原文引用；最终本地验收的 E2 不再出现约 10 秒 SDK 提前超时，但在 `evaluate` 节点达到应用 60 秒上限，安全返回 `504 MODEL_TIMEOUT / application`，故按停止规则未继续 E3/N1。后端 137/137、前端 6/6 Mock 与前端生产构建通过；当前结论为暂不适合进入部署，需先完成 evaluate 最小诊断与稳定性修复。**
+> 状态：**P3-0～P3-4、P4-A、P4-B、P6-A、P6-B 与 P5-A 已完成；P5-B 超时分类及 evaluate 最小离线诊断完成。E1 已真实通过；E2 可确认在一次 `evaluate` 结构化模型调用的整体管线内达到应用 60 秒上限，但旧日志不足以继续区分传输、上游推理和结构化解析，也不能证明输入规模是根因。现已补充不含问题、Prompt 或正文的超时前诊断元数据，后端 138/138、前端 6/6 Mock 与前端生产构建通过；当前仍暂不适合部署，需经授权对 E2 做一次带新诊断的真实复验。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -989,6 +989,20 @@ E2 与先前约 10.5 秒的 `sdk_or_upstream` 超时不同：本次是 MemoRAG �
 **离线回归与构建**：后端 14 个测试文件、137/137 Mock（含嵌套子测试）通过；前端 2 个测试文件、6/6 通过；Vite 生产构建成功。测试预加载继续显式关闭 LangSmith/LangChain 追踪。构建产物位于已忽略的 `frontend/dist/`。
 
 **部署结论：暂不适合部署。** 数据链路、HTTP、React、E1 单跳答案与引用、Mock 和构建均达到实习项目展示基础，但一个核心单跳问题仍会占满 60 秒并失败，现场演示稳定性不足。冻结新增功能，下一步只应做 evaluate 最小诊断：在不记录 prompt/正文的前提下，于模型调用前记录 route mode、当前检索次数、评估文档 ID/数量和裁剪后字符数，使超时也能保留安全上下文；取得证据后再决定是否精简评估输入/提示或调整模型选择。不得通过提高超时、自动重试、跳过 coverage 或无依据生成来掩盖问题。该诊断涉及业务代码，须由用户另行确认后实施。
+
+#### P5-B 后续：evaluate 最小离线诊断（v1.10）
+
+**执行状态与边界**：完成只读代码/依赖核对、最小安全诊断补充和全量 Mock 回归；没有调用真实 LLM、Embedding、Rerank、联网搜索或 LangSmith，没有连接或修改数据库、索引和 Collection。未修改模型、Prompt 语义、coverage 规则、Graph、超时、重试或检索预算。
+
+**已确认的调用路径**：`evaluateNode` 使用与 route/generate 相同的 `qwen-plus` ChatOpenAI 实例，温度为 0、请求上限 60000 ms、SDK 重试为 0。每次节点执行仅调用一次 `withStructuredOutput(EvaluateSchema).invoke()`；当前安装的 LangChain/OpenAI 适配层对该兼容模型使用 JSON Schema 结构化输出。评估证据由各检索轮次平衡选取，最多 6 条，每条正文截取 600 字符；联网上下文另限 3000 字符且 E2 当时已关闭联网。应用计时器包围整个结构化 Runnable，所以 60 秒包含请求准备、网络/上游模型及结果解析，但没有代码层隐藏重试或第二次 evaluate 模型调用。
+
+**根因结论**：能确认 E2 的一次 evaluate 结构化 Runnable 未在应用 60 秒内完成，且不是 Graph 循环、SDK 自动重试或 MemoRAG 额外等待造成。不能根据现有证据继续断定是评估输入较长、JSON Schema、兼容端点瞬时延迟、网络传输还是响应解析；E1 与 E2 的已知差异只有问题内容、E1 evaluate 约 8.979 秒成功而 E2 在 evaluate 达到 60 秒。E2 旧失败没有保存 route mode、检索次数、评估文档快照或输入字符数，因此这些差异均不得作为已确认根因。
+
+**最小诊断修复**：evaluate 在模型请求前生成白名单元数据 `routeMode/retrievalCount/evaluationDocumentIds/evaluationDocumentCount/requiredPlanItemCount/inputCharacterCount/modelCallStartedAtMs`，写入可注入 logger，并随应用级或 SDK/上游超时错误保留。HTTP 失败日志再次按字段白名单、数量和长度裁剪；公开 504 响应保持原契约，不返回这些内部字段。`inputCharacterCount` 仅表示提交给 Runnable 的 Prompt 字符数，不包含 JSON Schema 和 SDK 请求封装。日志不包含问题、Prompt、文档正文、密钥、连接 URL 或底层错误消息；日志失败也不会改变问答结果。
+
+**修改与测试**：更新 `backend/src/rag/shared/timeouts.js`、EPUB evaluate 节点及其依赖装配、`backend/src/http/app.js`、`backend/src/http/server.js`、两份 Mock 测试和本 SDD。新增 evaluate 挂起 Mock，验证调用前日志、超时错误元数据与敏感正文不泄漏；HTTP Mock 验证只记录白名单且公开 504 不变。最终后端 14 个测试文件、138/138 Mock（含嵌套子测试）通过；前端 2 个测试文件、6/6 通过；Vite 生产构建成功。
+
+**待真实验证与部署门槛**：若要决定是否进入部署，仍有必要在用户再次明确授权后仅复验一次 E2，不自动重试，并保存新元数据。若仍超时，先用该次 `evaluationDocumentCount/inputCharacterCount` 与 E1 对照，再决定是否需要一个独立的最小修复；在取得证据前不调整 Prompt、模型或预算。E2 稳定完成且回答/引用得到原文支持、E3/N1 的既定验收状态得到明确处置之前，项目仍不满足现场演示的稳定性门槛。任何对外部署还必须用可信身份层绑定 `userId`；当前请求参数隔离不能替代认证。
 
 ### 后续阶段（本阶段不实施）
 

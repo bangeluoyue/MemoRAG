@@ -38,6 +38,7 @@ export function createAgenticRagGraph({
   maxWebSearches = 2,
   maxCitationCorrectionAttempts = 1,
   modelTimeoutMs,
+  diagnosticLogger = null,
 }) {
   const citationCorrectionLimit = Math.max(
     0,
@@ -88,6 +89,7 @@ export function createAgenticRagGraph({
     webSearch,
     maxWebSearches,
     modelTimeoutMs,
+    diagnosticLogger,
   });
   const webSearchNode = createWebSearchNode({ webSearch });
   const { directAnswerNode, generateNode } = createGenerateNodes({

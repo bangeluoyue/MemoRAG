@@ -376,6 +376,31 @@ class ThirdPartyTimeoutModel {
   }
 }
 
+class HangingEvaluateModel {
+  withStructuredOutput(schema) {
+    const keys = Object.keys(schema.shape);
+    if (keys.includes("mode")) {
+      return {
+        invoke: async () => ({
+          mode: "single_retrieval",
+          reason: "单跳诊断 Mock",
+        }),
+      };
+    }
+    return {
+      invoke: async (_input, { signal } = {}) => new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      }),
+    };
+  }
+
+  async invoke() {
+    return { content: "不会执行到生成节点" };
+  }
+}
+
 function createTestConfig() {
   return {
     model: {
@@ -622,6 +647,74 @@ test("a hanging model call stops at the configured stage timeout", async () => {
       && error.timeoutSource === TIMEOUT_SOURCES.APPLICATION,
   );
   assert.ok(Date.now() - startedAt < 150);
+});
+
+test("an evaluate timeout retains only safe pre-call diagnostics", async () => {
+  const config = createTestConfig();
+  config.model.requestTimeoutMs = 20;
+  config.rag.agentTimeoutMs = 200;
+  const logged = [];
+  const startedAt = Date.now();
+  const rag = createEbookRag({
+    config,
+    model: new HangingEvaluateModel(),
+    embeddings: {},
+    milvusClient: {},
+    diagnosticLogger: { info(event) { logged.push(event); } },
+    retriever: {
+      async search() {
+        return [
+          {
+            id: "diagnostic-doc-1",
+            score: 0.9,
+            bookId: "1",
+            bookName: "天龙八部",
+            chapterNum: 1,
+            chunkIndex: 0,
+            content: "SENSITIVE_EVALUATION_DOCUMENT_ONE",
+          },
+          {
+            id: "diagnostic-doc-2",
+            score: 0.8,
+            bookId: "1",
+            bookName: "天龙八部",
+            chapterNum: 1,
+            chunkIndex: 1,
+            content: "SENSITIVE_EVALUATION_DOCUMENT_TWO",
+          },
+        ];
+      },
+    },
+  });
+
+  let timeoutError;
+  await assert.rejects(
+    () => rag.ask("SENSITIVE_EVALUATION_QUESTION"),
+    (error) => {
+      timeoutError = error;
+      return error instanceof ModelInvocationTimeoutError
+        && error.stage === "evaluate"
+        && error.timeoutSource === TIMEOUT_SOURCES.APPLICATION;
+    },
+  );
+
+  assert.equal(logged.length, 1);
+  assert.equal(logged[0].event, "evaluate_model_call_started");
+  assert.deepEqual(timeoutError.timeoutDiagnostics, {
+    routeMode: "single_retrieval",
+    retrievalCount: 1,
+    evaluationDocumentIds: ["diagnostic-doc-1", "diagnostic-doc-2"],
+    evaluationDocumentCount: 2,
+    requiredPlanItemCount: 1,
+    inputCharacterCount: logged[0].inputCharacterCount,
+    modelCallStartedAtMs: logged[0].modelCallStartedAtMs,
+  });
+  assert.ok(logged[0].inputCharacterCount > 0);
+  assert.ok(logged[0].modelCallStartedAtMs >= startedAt);
+  assert.doesNotMatch(
+    JSON.stringify({ logged, diagnostics: timeoutError.timeoutDiagnostics }),
+    /SENSITIVE_EVALUATION_(?:QUESTION|DOCUMENT)/u,
+  );
 });
 
 test("the whole-Agent deadline bounds cumulative graph latency", async () => {

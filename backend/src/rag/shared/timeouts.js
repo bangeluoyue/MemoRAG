@@ -8,6 +8,7 @@ export const TIMEOUT_SOURCES = Object.freeze({
 class RagTimeoutError extends Error {
   constructor(name, code, stage, timeoutMs, {
     timeoutSource = TIMEOUT_SOURCES.APPLICATION,
+    timeoutDiagnostics = null,
   } = {}) {
     super(`${stage} timed out after ${timeoutMs}ms`);
     this.name = name;
@@ -15,6 +16,7 @@ class RagTimeoutError extends Error {
     this.stage = stage;
     this.timeoutMs = timeoutMs;
     this.timeoutSource = timeoutSource;
+    this.timeoutDiagnostics = timeoutDiagnostics;
   }
 }
 
@@ -115,6 +117,7 @@ export async function invokeModelWithTimeout(runnable, input, {
   stage,
   timeoutMs = DEFAULT_LLM_TIMEOUT_MS,
   signal,
+  timeoutDiagnostics = null,
 } = {}) {
   const resolvedStage = stage ?? "model";
   const limit = positiveTimeout(timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
@@ -128,6 +131,7 @@ export async function invokeModelWithTimeout(runnable, input, {
         createError: (applicationLimit) => new ModelInvocationTimeoutError(
           resolvedStage,
           applicationLimit,
+          { timeoutDiagnostics },
         ),
         parentSignal: signal,
       },
@@ -138,6 +142,7 @@ export async function invokeModelWithTimeout(runnable, input, {
     }
     throw new ModelInvocationTimeoutError(resolvedStage, limit, {
       timeoutSource: TIMEOUT_SOURCES.SDK_OR_UPSTREAM,
+      timeoutDiagnostics,
     });
   }
 }

@@ -32,14 +32,18 @@ function closeServer(server) {
 
 export function createApiRuntime(options = {}) {
   const config = options.config ?? getConfig();
-  const ebookRag = options.ebookRag ?? createEbookRag({ config });
+  const logger = options.logger ?? console;
+  const ebookRag = options.ebookRag ?? createEbookRag({
+    config,
+    diagnosticLogger: logger,
+  });
   const notesRag = options.notesRag ?? createNotesRag({ config });
   const notesService = options.notesService ?? createNotesService({ config });
   const server = createServer(createHttpHandler({
     ebookRag,
     notesRag,
     notesService,
-    logger: options.logger,
+    logger,
   }));
 
   return {
