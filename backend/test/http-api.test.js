@@ -286,6 +286,69 @@ test("HTTP reports an EPUB version conflict without presenting a partial upload 
   });
 });
 
+test("HTTP safely logs EPUB Embedding batch diagnostics without leaking upstream details", async () => {
+  const logged = [];
+  const upstream = new Error("PRIVATE_KEY_URL_AND_RESPONSE");
+  upstream.name = "BadRequestError";
+  upstream.status = 400;
+  await withApi(baseDependencies({
+    ebookLibrary: {
+      async getBookMetadata() { return null; },
+      async upload() {
+        throw new EbookIngestionError(
+          "EMBEDDING_BATCH_FAILED",
+          "Embedding 批次失败；已写入 10 条",
+          {
+            cause: upstream,
+            details: {
+              insertedCount: 10,
+              batchIndex: 1,
+              batchNumber: 2,
+              textCount: 10,
+              durationMs: 321,
+              upstreamHttpStatus: 400,
+              upstreamErrorType: "BadRequestError",
+              prompt: "PRIVATE_DOCUMENT_CONTENT",
+            },
+          },
+        );
+      },
+    },
+    logger: { error(event) { logged.push(event); } },
+  }), async (requestApi) => {
+    const response = await requestApi("/api/ebooks/upload", {
+      method: "POST",
+      ...multipartEpub("embedding-failure.epub"),
+    });
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), {
+      error: {
+        code: "EMBEDDING_BATCH_FAILED",
+        message: "Embedding 批次失败；已写入 10 条",
+      },
+    });
+    assert.deepEqual(logged, [{
+      event: "http_request_failed",
+      errorCategory: "EMBEDDING_BATCH_FAILED",
+      method: "POST",
+      path: "/api/ebooks/upload",
+      embeddingDiagnostics: {
+        batchIndex: 1,
+        batchNumber: 2,
+        textCount: 10,
+        durationMs: 321,
+        insertedCount: 10,
+        upstreamHttpStatus: 400,
+        upstreamErrorType: "BadRequestError",
+      },
+    }]);
+    assert.doesNotMatch(
+      JSON.stringify({ response: await response.json(), logged }),
+      /PRIVATE|KEY|URL|DOCUMENT_CONTENT/u,
+    );
+  });
+});
+
 test("HTTP API exposes health and isolated EPUB/notes RAG answers", async () => {
   const calls = [];
   await withApi(baseDependencies({

@@ -4,7 +4,8 @@ import {
   DataType,
 } from "@zilliz/milvus2-sdk-node";
 
-export const DEFAULT_EPUB_INGEST_BATCH_SIZE = 20;
+export const MAX_EPUB_EMBEDDING_BATCH_SIZE = 10;
+export const DEFAULT_EPUB_INGEST_BATCH_SIZE = MAX_EPUB_EMBEDDING_BATCH_SIZE;
 export const DUPLICATE_POLICIES = Object.freeze(["skip", "error", "resume"]);
 
 const REQUIRED_FIELDS = Object.freeze({
@@ -41,6 +42,37 @@ function positiveInteger(value, name) {
     throw new EbookIngestionError("INPUT_INVALID", `${name} 必须是正整数`);
   }
   return number;
+}
+
+function embeddingBatchSize(value) {
+  const size = positiveInteger(value, "batchSize");
+  if (size > MAX_EPUB_EMBEDDING_BATCH_SIZE) {
+    throw new EbookIngestionError(
+      "INPUT_INVALID",
+      `batchSize 不能超过 ${MAX_EPUB_EMBEDDING_BATCH_SIZE}`,
+    );
+  }
+  return size;
+}
+
+function upstreamHttpStatus(error) {
+  const candidates = [
+    error?.status,
+    error?.response?.status,
+    error?.cause?.status,
+    error?.cause?.response?.status,
+  ];
+  const status = candidates.find((value) => (
+    Number.isInteger(Number(value))
+    && Number(value) >= 100
+    && Number(value) <= 599
+  ));
+  return status == null ? null : Number(status);
+}
+
+function upstreamErrorType(error) {
+  const value = String(error?.name || error?.constructor?.name || "Error");
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/u.test(value) ? value : "Error";
 }
 
 function assertSuccess(response, code, message) {
@@ -219,7 +251,7 @@ export class MilvusEbookWriter {
     const normalizedBookId = String(bookId ?? "").trim();
     safeStringLiteral(normalizedBookId, "bookId");
     const normalizedBookName = String(bookName ?? "").trim();
-    const size = positiveInteger(batchSize, "batchSize");
+    const size = embeddingBatchSize(batchSize);
     const policy = normalizeDuplicatePolicy(onDuplicate);
     const schema = await this.#validateCollection();
     validateRecords(records, schema, normalizedBookId, normalizedBookName);
@@ -262,16 +294,27 @@ export class MilvusEbookWriter {
     let batchCount = 0;
     for (let offset = 0; offset < pending.length; offset += size) {
       const batch = pending.slice(offset, offset + size);
+      const texts = batch.map((record) => record.content);
+      const embeddingStartedAt = Date.now();
       let vectors;
       try {
-        vectors = await this.embeddings.embedDocuments(
-          batch.map((record) => record.content),
-        );
+        vectors = await this.embeddings.embedDocuments(texts);
       } catch (error) {
         throw new EbookIngestionError(
           "EMBEDDING_BATCH_FAILED",
           `Embedding 批次失败；已写入 ${insertedCount} 条`,
-          { cause: error, details: { insertedCount, batchIndex: batchCount } },
+          {
+            cause: error,
+            details: {
+              insertedCount,
+              batchIndex: batchCount,
+              batchNumber: batchCount + 1,
+              textCount: texts.length,
+              durationMs: Date.now() - embeddingStartedAt,
+              upstreamHttpStatus: upstreamHttpStatus(error),
+              upstreamErrorType: upstreamErrorType(error),
+            },
+          },
         );
       }
       if (!Array.isArray(vectors) || vectors.length !== batch.length

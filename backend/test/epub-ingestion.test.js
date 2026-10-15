@@ -11,11 +11,14 @@ import {
   validateEpubPath,
 } from "../src/rag/ebook/ingestion/epub-loader.js";
 import {
+  createEbookEmbeddingClient,
   createEbookIngestion,
   prepareEpubIngestion,
 } from "../src/rag/ebook/ingestion/index.js";
 import {
+  DEFAULT_EPUB_INGEST_BATCH_SIZE,
   EbookIngestionError,
+  MAX_EPUB_EMBEDDING_BATCH_SIZE,
   MilvusEbookWriter,
 } from "../src/rag/ebook/ingestion/milvus-writer.js";
 import {
@@ -314,6 +317,37 @@ test("partial import requires explicit resume and writes only missing chunks in 
   assert.equal(resumed.calls.insert[0].data[0].index, 1);
 });
 
+test("default EPUB Embedding batches split 20 texts into requests of at most 10", async () => {
+  const records = Array.from({ length: 20 }, (_, index) => record(1, index));
+  const fixture = writerFixture();
+  const result = await fixture.writer.write({
+    records,
+    bookId: "book-1",
+    bookName: "Book",
+  });
+
+  assert.equal(DEFAULT_EPUB_INGEST_BATCH_SIZE, 10);
+  assert.equal(MAX_EPUB_EMBEDDING_BATCH_SIZE, 10);
+  assert.deepEqual(fixture.embeddingCalls.map((texts) => texts.length), [10, 10]);
+  assert.deepEqual(fixture.calls.insert.map((request) => request.data.length), [10, 10]);
+  assert.equal(result.insertedCount, 20);
+  assert.equal(result.batchCount, 2);
+});
+
+test("EPUB writer refuses a configured batch above the upstream limit", async () => {
+  const fixture = writerFixture();
+  await assert.rejects(
+    fixture.writer.write({
+      records: [record(1, 0)],
+      bookId: "book-1",
+      bookName: "Book",
+      batchSize: 11,
+    }),
+    (error) => error.code === "INPUT_INVALID" && /10/u.test(error.message),
+  );
+  assert.equal(fixture.embeddingCalls.length, 0);
+});
+
 test("Embedding mismatch stops the batch before Milvus insert", async () => {
   const fixture = writerFixture();
   fixture.writer.embeddings = {
@@ -351,6 +385,54 @@ test("batch failure reports safe progress for a resumable retry", async () => {
   );
 });
 
+test("Embedding batch failure preserves safe diagnostics and confirmed progress", async () => {
+  const records = Array.from({ length: 20 }, (_, index) => record(1, index));
+  const fixture = writerFixture();
+  const embeddingCalls = [];
+  fixture.writer.embeddings = {
+    async embedDocuments(texts) {
+      embeddingCalls.push([...texts]);
+      if (embeddingCalls.length === 2) {
+        const error = new Error("PRIVATE_RESPONSE_BODY");
+        error.name = "BadRequestError";
+        error.status = 400;
+        throw error;
+      }
+      return texts.map((_, index) => [index + 0.1, index + 0.2]);
+    },
+  };
+
+  await assert.rejects(
+    fixture.writer.write({ records, bookId: "book-1", bookName: "Book" }),
+    (error) => error.code === "EMBEDDING_BATCH_FAILED"
+      && error.details.insertedCount === 10
+      && error.details.batchIndex === 1
+      && error.details.batchNumber === 2
+      && error.details.textCount === 10
+      && error.details.upstreamHttpStatus === 400
+      && error.details.upstreamErrorType === "BadRequestError"
+      && Number.isInteger(error.details.durationMs)
+      && !error.message.includes("PRIVATE_RESPONSE_BODY"),
+  );
+  assert.deepEqual(embeddingCalls.map((texts) => texts.length), [10, 10]);
+  assert.deepEqual(fixture.calls.insert.map((request) => request.data.length), [10]);
+});
+
+test("EPUB Embedding client applies the upstream batch cap, timeout, and retry limit", () => {
+  const embeddings = createEbookEmbeddingClient({
+    apiKey: "test-key",
+    baseUrl: "https://example.test/v1",
+    embeddingModel: "test-embedding",
+    embeddingDimension: 2,
+    requestTimeoutMs: 12345,
+    maxRetries: 1,
+  });
+
+  assert.equal(embeddings.batchSize, 10);
+  assert.equal(embeddings.timeout, 12345);
+  assert.equal(embeddings.caller.maxRetries, 1);
+});
+
 test("createEbookIngestion keeps injected clients isolated and close-safe", async () => {
   let closed = false;
   const records = [record(1, 0)];
@@ -385,6 +467,12 @@ test("ingest CLI defaults to dry-run and requires explicit execute", async () =>
       "book.epub", "--book-id", "book-1", "--chunk-size", "10", "--chunk-overlap", "10",
     ]),
     /--chunk-overlap/,
+  );
+  assert.throws(
+    () => parseIngestArgs([
+      "book.epub", "--book-id", "book-1", "--batch-size", "11",
+    ]),
+    /--batch-size 不能超过 10/u,
   );
 
   let ingestionCalled = false;

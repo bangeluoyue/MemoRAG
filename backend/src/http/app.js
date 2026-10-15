@@ -217,6 +217,34 @@ function safeTimeoutDiagnostics(error) {
   };
 }
 
+function safeEmbeddingDiagnostics(error) {
+  if (!(error instanceof EbookIngestionError)
+    || error.code !== "EMBEDDING_BATCH_FAILED") return null;
+  const details = error.details;
+  if (!details || typeof details !== "object") return null;
+  const nonNegativeInteger = (value) => (
+    Number.isInteger(Number(value)) && Number(value) >= 0
+      ? Number(value)
+      : null
+  );
+  const diagnostics = {
+    batchIndex: nonNegativeInteger(details.batchIndex),
+    batchNumber: nonNegativeInteger(details.batchNumber),
+    textCount: nonNegativeInteger(details.textCount),
+    durationMs: nonNegativeInteger(details.durationMs),
+    insertedCount: nonNegativeInteger(details.insertedCount),
+  };
+  const status = Number(details.upstreamHttpStatus);
+  if (Number.isInteger(status) && status >= 100 && status <= 599) {
+    diagnostics.upstreamHttpStatus = status;
+  }
+  const type = String(details.upstreamErrorType ?? "");
+  if (/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/u.test(type)) {
+    diagnostics.upstreamErrorType = type;
+  }
+  return diagnostics;
+}
+
 export function createHttpHandler({
   ebookRag,
   notesRag,
@@ -415,6 +443,7 @@ export function createHttpHandler({
       if (status >= 500 && typeof logger?.error === "function") {
         try {
           const timeoutDiagnostics = safeTimeoutDiagnostics(error);
+          const embeddingDiagnostics = safeEmbeddingDiagnostics(error);
           logger.error({
             event: "http_request_failed",
             errorCategory: String(error?.code ?? error?.name ?? "Error"),
@@ -425,6 +454,7 @@ export function createHttpHandler({
               timeoutSource: error.timeoutSource,
               ...(timeoutDiagnostics ? { timeoutDiagnostics } : {}),
             } : {}),
+            ...(embeddingDiagnostics ? { embeddingDiagnostics } : {}),
           });
         } catch {
           // Logging must not replace the safe HTTP response.

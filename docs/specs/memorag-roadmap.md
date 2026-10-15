@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v1.13（2026-10-15）
+> 版本：v1.14（2026-10-15）
 >
-> 状态：**两个独立 RAG 服务及核心问答逻辑保持不变；HTTP API 已增加固定管理员/测试员登录、PostgreSQL 持久化会话与后端权限校验。生活笔记范围改由登录会话绑定，管理员可查询 Milvus 书名、重置测试员密码并通过网页复用现有 EPUB ingestion。新增能力仅完成 Mock、前端测试与构建，真实 migration、登录和上传仍待用户手动验收。**
+> 状态：**两个独立 RAG 服务及核心问答逻辑保持不变；固定账号登录、会话权限、Milvus 书名查询与管理员 EPUB 上传已完成。EPUB 入库 Embedding 已按 text-embedding-v3 单次最多 10 条的契约修正批次、超时、重试与安全诊断；本次只完成 Mock，真实管理员上传仍待用户手动验收。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -815,7 +815,7 @@ flowchart LR
 2. `chunker.js` 复用 `RecursiveCharacterTextSplitter`，默认 `chunkSize=500`、`chunkOverlap=50`；分块 ID 为 `ebook_` + SHA-256(`bookId/chapterNum/chunkIndex/content`)，不依赖运行时随机值。
 3. `milvus-writer.js` 只读检查 Collection 存在性与 `id/book_id/book_name/chapter_num/index/content/vector` 字段类型、`id` 主键和向量维度；它不会自动修补 Schema。
 4. 写入前使用 Strong consistency 按 `book_id` 查询已有 ID：完整同版本默认跳过，`error` 策略直接拒绝，部分同版本只能通过显式 `resume` 补齐；出现不属于当前稳定 ID 集合的旧数据时报版本冲突。不实现 replace/upsert/delete。
-5. 待写入块按默认 20 条一批调用 `embedDocuments()`，校验向量数量/维度/有限数值后调用 Milvus `insert`。失败仅返回安全错误类别和已确认进度，可用 `resume` 重试缺失 ID。
+5. 待写入块按默认及最大 10 条一批调用 `embedDocuments()`，SDK 内部 `batchSize` 同步固定为 10；校验向量数量/维度/有限数值后才调用 Milvus `insert`。失败仅返回安全错误类别和已确认进度，可用 `resume` 重试缺失 ID。
 
 **CLI**：`npm run ingest:epub -- <book.epub> --book-id <id>` 默认只解析/分块并输出计划；只有显式 `--execute` 才创建 Embedding/Milvus 客户端并执行写入。支持 `--book-name`、`--chunk-size`、`--chunk-overlap`、`--batch-size` 和 `--on-duplicate skip|error|resume`。
 
@@ -1052,6 +1052,14 @@ E2 与先前约 10.5 秒的 `sdk_or_upstream` 超时不同：本次是 MemoRAG �
 **数据与迁移边界**：新增 `sql/002_create_auth.sql`，仅创建 `memorag_users` 与 `memorag_sessions` 及会话索引，不修改 `life_notes` 或任何业务数据。本轮没有执行 migration、连接真实存储、调用模型/Embedding/Rerank/联网服务，也没有真实上传 EPUB。首次手动启动前需安全设置 `DATABASE_URL`、至少 32 字符的 `SESSION_SECRET` 与只在管理员缺失时使用的 `ADMIN_INITIAL_PASSWORD`，然后由用户手动执行该 migration。
 
 **验证结果**：后端完整 Mock 以 16 个测试文件通过；无文件隔离复核为 149 个顶层测试、154 个含嵌套测试，0 失败。新增认证持久化 Repository、HTTP 权限、会话租户覆盖、Milvus 书名查询、稳定上传 ID、invalid file、失败清理、版本冲突和 append-only delegation 覆盖。前端 2 个测试文件、9/9 通过，覆盖登录/退出、角色可见性、管理员改密/上传、书名及既有问答/CRUD；Vite 生产构建成功。真实浏览器登录、PostgreSQL migration、Milvus 元数据和真实 EPUB 上传待用户验收。
+
+#### EPUB Embedding 批量入库修复（v1.14）
+
+**问题与修复**：管理员首次真实上传使用 `text-embedding-v3` 时，Writer 将 20 个文本作为同一次 `embedDocuments()` 请求发送，超过该模型同步接口单次最多 10 条的限制，首批失败并安全报告写入 0 条。默认和最大 Writer 批次均改为 10，`OpenAIEmbeddings.batchSize` 同步设为 10；现有 `requestTimeoutMs` 与 `maxRetries` 显式传给入库 Embedding 客户端，当前默认分别为 60000 ms 和 0 次重试。
+
+**安全诊断与数据边界**：Embedding 失败日志只记录批次索引/序号、文本数量、耗时、已确认写入数、上游 HTTP 状态和错误类型，不记录正文、错误消息、响应内容、密钥或 URL。稳定文件 `bookId`、稳定分块 ID、Strong consistency 重复检查、append-only Milvus insert 与 `resume` 逻辑均未改变；没有修改 Agentic RAG、生活笔记、React、Schema 或现有数据。
+
+**Mock 结果与待验收**：后端 16 个测试文件全部通过；无文件隔离复核为 154 个顶层测试、159 个含嵌套测试，0 失败。新增覆盖 20 条文本拆成 10+10、超过上限拒绝、第二批失败保留首批 10 条已确认进度、SDK 超时/重试配置和 HTTP 日志脱敏。本轮未调用真实 Embedding、未上传 EPUB、未连接或修改 Milvus；管理员通过前端重新上传仍是唯一必要的真实验收。
 
 ### 后续阶段（本阶段不实施）
 

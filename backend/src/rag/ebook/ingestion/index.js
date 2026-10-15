@@ -11,8 +11,10 @@ import {
   DEFAULT_EPUB_INGEST_BATCH_SIZE,
   DUPLICATE_POLICIES,
   EbookIngestionError,
+  MAX_EPUB_EMBEDDING_BATCH_SIZE,
   MilvusEbookWriter,
 } from "./milvus-writer.js";
+import { DEFAULT_LLM_TIMEOUT_MS } from "../../shared/timeouts.js";
 
 function fallbackBookName(filePath) {
   return basename(String(filePath ?? ""), extname(String(filePath ?? ""))).trim();
@@ -60,6 +62,20 @@ export async function prepareEpubIngestion({
   };
 }
 
+export function createEbookEmbeddingClient(modelConfig) {
+  return new OpenAIEmbeddings({
+    model: modelConfig.embeddingModel,
+    apiKey: modelConfig.apiKey,
+    dimensions: modelConfig.embeddingDimension,
+    batchSize: MAX_EPUB_EMBEDDING_BATCH_SIZE,
+    timeout: modelConfig.requestTimeoutMs ?? DEFAULT_LLM_TIMEOUT_MS,
+    maxRetries: modelConfig.maxRetries ?? 0,
+    configuration: modelConfig.baseUrl
+      ? { baseURL: modelConfig.baseUrl }
+      : undefined,
+  });
+}
+
 export function createEbookIngestion({
   config,
   client,
@@ -72,14 +88,7 @@ export function createEbookIngestion({
   }
   const ownedClient = !client;
   const milvusClient = client ?? createMilvusClient(config.milvus);
-  const embeddingClient = embeddings ?? new OpenAIEmbeddings({
-    model: config.model.embeddingModel,
-    apiKey: config.model.apiKey,
-    dimensions: config.model.embeddingDimension,
-    configuration: config.model.baseUrl
-      ? { baseURL: config.model.baseUrl }
-      : undefined,
-  });
+  const embeddingClient = embeddings ?? createEbookEmbeddingClient(config.model);
   const writer = new MilvusEbookWriter({
     client: milvusClient,
     embeddings: embeddingClient,
@@ -127,6 +136,7 @@ export {
   DEFAULT_EPUB_CHUNK_OVERLAP,
   DEFAULT_EPUB_CHUNK_SIZE,
   DEFAULT_EPUB_INGEST_BATCH_SIZE,
+  MAX_EPUB_EMBEDDING_BATCH_SIZE,
   DUPLICATE_POLICIES,
   EbookIngestionError,
   MilvusEbookWriter,

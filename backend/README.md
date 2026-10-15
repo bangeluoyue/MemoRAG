@@ -126,6 +126,8 @@ npm run notes -- create --user-id demo-user --content "演示笔记"
 
 只有在明确授权真实写入后才能对入库或笔记命令增加 `--execute`。入库工具不会删除、重建或覆盖现有 EPUB Collection；禁止直接运行旧课程脚本中的 `dropCollection` 或 seed 逻辑。
 
+EPUB 入库的 Embedding 批次默认且最多为 10 条，与 `text-embedding-v3` 的同步接口限制一致；更大的 `--batch-size` 会在调用上游前被拒绝。
+
 ## HTTP API
 
 服务默认只监听 `127.0.0.1:3000`。

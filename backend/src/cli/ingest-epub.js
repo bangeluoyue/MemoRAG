@@ -4,6 +4,7 @@ import {
   DEFAULT_EPUB_CHUNK_SIZE,
   DEFAULT_EPUB_INGEST_BATCH_SIZE,
   DUPLICATE_POLICIES,
+  MAX_EPUB_EMBEDDING_BATCH_SIZE,
   createEbookIngestion,
   prepareEpubIngestion,
 } from "../rag/ebook/ingestion/index.js";
@@ -85,6 +86,9 @@ export function parseIngestArgs(argv) {
   if (!result.bookId.trim()) throw new Error("请通过 --book-id 指定稳定图书 ID");
   if (result.chunkOverlap >= result.chunkSize) {
     throw new Error("--chunk-overlap 必须小于 --chunk-size");
+  }
+  if (result.batchSize > MAX_EPUB_EMBEDDING_BATCH_SIZE) {
+    throw new Error(`--batch-size 不能超过 ${MAX_EPUB_EMBEDDING_BATCH_SIZE}`);
   }
   if (!DUPLICATE_POLICIES.includes(result.onDuplicate)) {
     throw new Error(`--on-duplicate 必须是 ${DUPLICATE_POLICIES.join("、")}`);
