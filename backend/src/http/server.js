@@ -2,8 +2,10 @@ import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { getConfig } from "../config.js";
+import { createAuthService } from "../auth/index.js";
 import { createNotesService } from "../notes/index.js";
 import { createEbookRag } from "../rag/ebook/index.js";
+import { createEbookLibrary } from "../rag/ebook/library-service.js";
 import { createNotesRag } from "../rag/notes/agent.js";
 import { createHttpHandler } from "./app.js";
 
@@ -39,16 +41,22 @@ export function createApiRuntime(options = {}) {
   });
   const notesRag = options.notesRag ?? createNotesRag({ config });
   const notesService = options.notesService ?? createNotesService({ config });
+  const authService = options.authService ?? createAuthService({ config });
+  const ebookLibrary = options.ebookLibrary ?? createEbookLibrary({ config });
   const server = createServer(createHttpHandler({
     ebookRag,
     notesRag,
     notesService,
+    authService,
+    ebookLibrary,
     logger,
+    epubUploadMaxBytes: config.uploads.epubMaxBytes,
   }));
 
   return {
     server,
     async start() {
+      await authService.initialize();
       await listen(server, config.http);
       return server.address();
     },
@@ -58,6 +66,8 @@ export function createApiRuntime(options = {}) {
         ebookRag.close?.(),
         notesRag.close?.(),
         notesService.close?.(),
+        authService.close?.(),
+        ebookLibrary.close?.(),
       ]);
     },
   };

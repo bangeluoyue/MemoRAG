@@ -1,6 +1,6 @@
 # MemoRAG Backend
 
-后端提供两个独立 RAG 服务、EPUB 入库、生活笔记 CRUD/双索引同步，以及基于 Node 内置 HTTP Server 的演示 API。
+后端提供两个独立 RAG 服务、EPUB 入库、生活笔记 CRUD/双索引同步，以及基于 Node 内置 HTTP Server 的演示 API。HTTP API 使用两个固定账号和 PostgreSQL 持久化的 HttpOnly Cookie 会话。
 
 ## 当前问答架构
 
@@ -55,8 +55,11 @@ Milvus 向量检索 ┘
 - `src/rag/notes/`：ES/Milvus Retriever、RRF、Rerank 和 NotesRag 编排。
 - `src/notes/`：PostgreSQL Repository、CRUD、双索引同步和 retry。
 - `src/http/`：HTTP 服务与安全错误映射。
+- `src/auth/`：固定账号初始化、scrypt 密码哈希、会话摘要与权限检查。
+- `src/rag/ebook/library-service.js`：Milvus 书名查询和管理员上传适配。
 - `src/observability/`：默认关闭的 LangSmith 追踪。
 - `sql/001_create_life_notes.sql`：生活笔记最小表结构；不会自动执行。
+- `sql/002_create_auth.sql`：固定账号及会话表；不会自动执行或改写生活笔记数据。
 
 ## 配置
 
@@ -72,6 +75,12 @@ EMBEDDING_DIMENSION=1024
 MILVUS_ADDRESS=
 MILVUS_BOOK_COLLECTION=ebook_collection
 MILVUS_BOOK_ID=1
+
+DATABASE_URL=
+ADMIN_INITIAL_PASSWORD=
+SESSION_SECRET=
+AUTH_COOKIE_SECURE=
+EPUB_UPLOAD_MAX_BYTES=26214400
 
 LLM_TIMEOUT_MS=60000
 LLM_MAX_RETRIES=0
@@ -90,7 +99,15 @@ LANGSMITH_TRACING=false
 MEMORAG_LANGSMITH_CONTENT_MODE=metadata_only
 ```
 
-生活笔记还需要 `DATABASE_URL`、`ELASTICSEARCH_NODE`、`ELASTICSEARCH_NOTES_INDEX` 和 `MILVUS_NOTES_COLLECTION`。`userId` 只用于演示范围隔离，不能替代身份认证。
+生活笔记还需要 `DATABASE_URL`、`ELASTICSEARCH_NODE`、`ELASTICSEARCH_NOTES_INDEX` 和 `MILVUS_NOTES_COLLECTION`。`SESSION_SECRET` 至少 32 字符；`ADMIN_INITIAL_PASSWORD` 只在管理员尚不存在时使用，服务启动不会覆盖之后修改的密码。生产环境默认使用 Secure Cookie，也可通过 `AUTH_COOKIE_SECURE` 显式配置。
+
+首次启用登录前手动执行最小 migration（本项目不会自动执行）：
+
+```bash
+psql "$DATABASE_URL" -f sql/002_create_auth.sql
+```
+
+固定管理员账号为 `18296262260@163.com`，其初始密码只从 `ADMIN_INITIAL_PASSWORD` 读取，文档和代码不提供默认值。固定测试员账号为 `test@123.com`，初始密码为需求约定的 `123456`；建议管理员首次登录后立即修改。生活笔记的内部范围固定映射为 `account-admin` / `account-tester`，后端忽略客户端提交的 `userId`。旧 `userId` 下的历史笔记不会被删除或自动迁移，也不会自动显示在两个账号的新个人空间中。
 
 ## 命令
 
@@ -116,8 +133,14 @@ npm run notes -- create --user-id demo-user --content "演示笔记"
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | `GET` | `/health` | 进程健康检查 |
+| `POST` | `/api/auth/login` | 固定账号登录并设置 HttpOnly Cookie |
+| `GET` | `/api/auth/me` | 恢复当前会话 |
+| `POST` | `/api/auth/logout` | 删除当前会话并清除 Cookie |
+| `PATCH` | `/api/admin/tester-password` | 管理员修改测试员密码 |
+| `GET` | `/api/ebooks/:bookId` | 从 Milvus 精确查询书名 |
+| `POST` | `/api/ebooks/upload` | 管理员上传并入库 EPUB |
 | `POST` | `/api/qa/ebook` | EPUB 问答，需 `question/bookId` |
-| `POST` | `/api/qa/notes` | 笔记问答，需 `question/userId` |
+| `POST` | `/api/qa/notes` | 当前登录账号的笔记问答，只需 `question` |
 | `POST` | `/api/notes` | 新增笔记 |
 | `GET` | `/api/notes` | 列出笔记 |
 | `GET` | `/api/notes/:noteId` | 笔记详情 |
@@ -126,6 +149,8 @@ npm run notes -- create --user-id demo-user --content "演示笔记"
 | `POST` | `/api/notes/:noteId/retry` | 重试索引同步 |
 
 模型超时返回安全的 `MODEL_TIMEOUT`/HTTP 504，并保留 `stage` 与 `timeoutSource`；其他认证、限流和连接错误不会被误判为模型超时。API 不返回密钥、连接字符串、完整 Prompt 或上游原始异常。
+
+除 `/health` 和登录所需接口外，业务接口均校验服务端会话。上传只接受 multipart 中的 `.epub` 文件，限制大小并校验 ZIP 特征；服务按文件 SHA-256 摘要生成稳定 `bookId`，调用现有 `resume` 入库策略，仅向现有兼容 Collection 追加缺失分块，不提供删除、重建、覆盖或服务器路径参数。
 
 ## 验收边界
 

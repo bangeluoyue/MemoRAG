@@ -20,7 +20,8 @@ EPUB
 - EPUB 入库：本地 EPUB 解析、章节分块、稳定 ID、Embedding 和批量 Milvus 写入；默认 dry-run。
 - 生活笔记：PostgreSQL CRUD、ES/Milvus 双索引同步、失败状态与显式 retry。
 - Notes Hybrid RAG：严格按 `userId + knowledgeBase` 隔离，ES/Milvus 并行召回、稳定 `note_id` 去重、RRF、可选 Qwen Rerank。
-- Node HTTP API 和 React + Vite 演示页面。
+- Node HTTP API 和 React + Vite 演示页面，包含两个固定账号的 Cookie 会话认证。
+- 管理员可重置测试员密码、按 Milvus 元数据查看书名，并通过网页复用安全 EPUB 入库流程。
 - 模型/整次请求超时、来源编号校验、默认关闭的 LangSmith metadata-only 追踪。
 
 历史 coverage、依赖改写、缺口恢复和复杂 evaluate Graph 仍保留在源码与 Git 历史中，但不再是默认问答路径。
@@ -36,6 +37,8 @@ EPUB
 cd backend
 npm install
 npm test
+# 首次启用登录前，仅执行最小认证表 migration（不会修改业务数据）
+psql "$DATABASE_URL" -f sql/002_create_auth.sql
 npm start
 ```
 
@@ -60,7 +63,7 @@ npm run build
 ## 安全边界
 
 - `.env`、密钥、数据库数据、日志和构建产物不得提交。
-- EPUB 检索始终按 `bookId` 过滤；生活笔记始终按 `userId + knowledgeBase` 过滤。
-- `userId` 是演示环境的数据范围参数，不是公网身份认证。
+- EPUB 检索始终按 `bookId` 过滤；生活笔记由后端会话绑定内部 `notes_user_id + knowledgeBase`，不信任前端 `userId`。
+- 当前只有固定管理员和测试员账号，适合本地演示；不是完整公网用户管理系统。管理员初始密码与会话密钥只允许通过本地环境变量提供。
 - 默认不启用联网、Rerank 或 LangSmith；真实数据库写入和付费模型调用需显式配置并单独授权。
 - 旧课程脚本仅供参考，不应直接运行其中的建库、删库或 seed 逻辑。

@@ -1,14 +1,71 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { AnswerPanel } from "./AnswerPanel.jsx";
 
-export function EbookQa() {
+export function EbookQa({ currentUser }) {
   const [bookId, setBookId] = useState("1");
   const [question, setQuestion] = useState("");
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  const [bookStatus, setBookStatus] = useState("loading");
+  const [book, setBook] = useState(null);
+  const [bookError, setBookError] = useState("");
+  const [uploadFile, setUploadFile] = useState(null);
+  const [uploadStatus, setUploadStatus] = useState("idle");
+  const [uploadMessage, setUploadMessage] = useState("");
   const controllerRef = useRef(null);
+
+  useEffect(() => {
+    const normalizedBookId = bookId.trim();
+    if (!normalizedBookId) {
+      setBook(null);
+      setBookStatus("idle");
+      setBookError("");
+      return undefined;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setBookStatus("loading");
+      setBookError("");
+      try {
+        const result = await api.getBook(normalizedBookId, { signal: controller.signal });
+        setBook(result.book);
+        setBookStatus("success");
+      } catch (requestError) {
+        if (requestError?.name === "AbortError") return;
+        setBook(null);
+        setBookStatus(requestError.code === "BOOK_NOT_FOUND" ? "not_found" : "error");
+        setBookError(requestError.message);
+      }
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [bookId]);
+
+  async function upload(event) {
+    event.preventDefault();
+    if (!uploadFile) {
+      setUploadStatus("error");
+      setUploadMessage("请选择 EPUB 文件。");
+      return;
+    }
+    setUploadStatus("loading");
+    setUploadMessage("");
+    try {
+      const result = await api.uploadEpub(uploadFile);
+      setUploadStatus("success");
+      setUploadMessage(`入库完成：${result.book.bookName}（${result.book.bookId}）`);
+      setBookId(result.book.bookId);
+      setBook({ bookId: result.book.bookId, bookName: result.book.bookName });
+      setUploadFile(null);
+    } catch (requestError) {
+      setUploadStatus("error");
+      setUploadMessage(requestError.message);
+    }
+  }
 
   async function submit(event) {
     event.preventDefault();
@@ -67,7 +124,7 @@ export function EbookQa() {
               <option value="1" />
               <option value="demo-book" />
             </datalist>
-            <small>当前没有图书列表 API，请输入已经存在的 bookId。</small>
+            <small>输入已经存在的 bookId，右侧会从 Milvus 查询书名。</small>
           </div>
           <div className="field-group">
             <label htmlFor="ebook-question">你想从书中了解什么？</label>
@@ -108,11 +165,38 @@ export function EbookQa() {
         <span className="eyebrow">Scope</span>
         <h2>当前知识库</h2>
         <div className="scope-display"><span>bookId</span><strong>{bookId.trim() || "未设置"}</strong></div>
-        <p>查询只会在该 bookId 对应的 EPUB 文档中进行本地检索。</p>
-        <div className="boundary-note">
-          <strong>入库边界</strong>
-          <p>本阶段不提供 EPUB 上传。请使用后端入库 CLI 准备书籍数据。</p>
+        <div className="scope-display">
+          <span>书籍名称</span>
+          <strong>
+            {bookStatus === "loading" && "查询中…"}
+            {bookStatus === "success" && book?.bookName}
+            {bookStatus === "not_found" && "未找到对应书籍"}
+            {bookStatus === "error" && "查询失败"}
+            {bookStatus === "idle" && "未设置"}
+          </strong>
         </div>
+        {bookStatus === "error" && <p className="inline-error">{bookError}</p>}
+        <p>查询只会在该 bookId 对应的 EPUB 文档中进行本地检索。</p>
+        {currentUser?.role === "admin" && (
+          <form className="boundary-note upload-form" onSubmit={upload}>
+            <strong>上传 EPUB</strong>
+            <p>文件会解析、生成 Embedding 并追加写入现有 Milvus Collection。</p>
+            <input
+              aria-label="选择 EPUB 文件"
+              type="file"
+              accept=".epub,application/epub+zip"
+              onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+              disabled={uploadStatus === "loading"}
+            />
+            <button className="secondary-button" type="submit" disabled={uploadStatus === "loading" || !uploadFile}>
+              {uploadStatus === "loading" ? "上传并处理中…" : "上传并入库"}
+            </button>
+            {uploadMessage && <p className={uploadStatus === "error" ? "inline-error" : "inline-success"} role="status">{uploadMessage}</p>}
+          </form>
+        )}
+        {currentUser?.role !== "admin" && (
+          <div className="boundary-note"><strong>查询权限</strong><p>测试员可以查询已入库电子书。</p></div>
+        )}
       </aside>
     </div>
   );

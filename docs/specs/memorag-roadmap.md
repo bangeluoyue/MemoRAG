@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v1.12（2026-10-15）
+> 版本：v1.13（2026-10-15）
 >
-> 状态：**默认架构已精简为两个独立服务。EPUB 保留三态路由、受控拆题、多轮 Milvus 检索、轻量决策、可选 Bocha 和引用生成；生成只使用原始问题与实际证据，不注入 route/decision reason，并新增人物关系与认知状态的通用约束。生活笔记使用 ES + Milvus + RRF + 可选 Rerank + 单次生成，已完成一次本机真实双源问答及三端精确清理验收。复杂 coverage/evaluate/依赖改写 Graph 仍仅作历史实现。EPUB Prompt 修复尚未重复真实 E2，不宣称已彻底解决幻觉。**
+> 状态：**两个独立 RAG 服务及核心问答逻辑保持不变；HTTP API 已增加固定管理员/测试员登录、PostgreSQL 持久化会话与后端权限校验。生活笔记范围改由登录会话绑定，管理员可查询 Milvus 书名、重置测试员密码并通过网页复用现有 EPUB ingestion。新增能力仅完成 Mock、前端测试与构建，真实 migration、登录和上传仍待用户手动验收。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -41,8 +41,13 @@ EPUB 保留必要的 Agentic 决策；生活笔记保持独立 Hybrid RAG。两�
 
 ```mermaid
 flowchart LR
+  UI["React"] -->|HttpOnly Cookie| HTTP
+  HTTP --> AUTH["固定账号认证 / 权限"]
+  AUTH --> APG["PostgreSQL users / sessions"]
   HTTP["Node HTTP API"] --> EBOOK["EbookRag"]
   HTTP --> NOTES["NotesRag"]
+  HTTP --> LIB["EPUB metadata / admin upload"]
+  LIB --> MV
 
   EBOOK --> ROUTE["direct / single_retrieval / multi_hop"]
   ROUTE -->|复杂问题| DECOMP["受控拆题"]
@@ -1035,6 +1040,18 @@ E2 与先前约 10.5 秒的 `sdk_or_upstream` 超时不同：本次是 MemoRAG �
 **清理与回归**：两条笔记均通过 HTTP DELETE 按精确 `note_id + userId` 删除，ES/Milvus 删除状态均为 `synced`，PostgreSQL 均 `purged`；随后三端精确只读查询均为零残留，没有扩大删除范围或修改 Schema。后端官方 `npm test` 的 14/14 测试文件通过；以无文件隔离模式复核为 142/142（含 5 个嵌套子测试）。前端 2 个测试文件、6/6 通过，Vite 生产构建成功。LangSmith、Bocha、EPUB Rerank、Notes Rerank 均关闭；没有修改 `ebook_collection`。
 
 **当前边界**：生活笔记 Hybrid RAG 已达到本机最小演示标准。EPUB 默认路径的真实执行与引用能力已有历史成功样例，本次生成约束修复只完成 Mock，仍需用户另行授权最多一次固定 E2 才能确认该具体人物关系错误是否改善；无需自动执行 E3、Bocha、Rerank 或批量评测。
+
+#### 固定账号登录与 EPUB 管理（v1.13）
+
+**实现范围**：新增两个固定账号的最小认证层。密码使用 Node `scrypt` 哈希，随机会话 Token 只写入 HttpOnly/SameSite Cookie，PostgreSQL 仅保存 HMAC-SHA256 会话摘要；生产环境默认 Secure Cookie，登录失败按客户端与账号做进程内限流。初始化只插入缺失账号，不覆盖已有密码；管理员修改测试员密码后持久化更新，并立即撤销测试员已有会话。没有注册、找回密码、角色编辑、Redis 或 OAuth。
+
+**权限与隔离**：除健康检查和登录流程外，业务 API 均由后端验证会话。管理员和测试员的 Notes 内部范围分别固定为 `account-admin`、`account-tester`，所有 Notes CRUD/问答都忽略客户端 `userId` 并使用会话范围；既有其他 `userId` 数据不会删除或自动迁移。管理员专属密码重置与 EPUB 上传接口同时做后端角色校验，测试员即使手工请求也会收到 403。
+
+**EPUB 管理**：新增按 `book_id` 强一致精确查询 `book_name` 的元数据接口。网页上传只接受受大小限制的 multipart `.epub` 文件并校验 ZIP 特征，不接受服务器路径；文件 SHA-256 摘要生成稳定 `bookId`，随后调用 P4-A 现有解析/分块/Embedding/Milvus writer 的 `resume` 策略。它不会创建、删除、清空、重建或覆盖 `ebook_collection`；同 ID 的不同内容仍由既有冲突检查拒绝，错误不会伪装为完整成功。
+
+**数据与迁移边界**：新增 `sql/002_create_auth.sql`，仅创建 `memorag_users` 与 `memorag_sessions` 及会话索引，不修改 `life_notes` 或任何业务数据。本轮没有执行 migration、连接真实存储、调用模型/Embedding/Rerank/联网服务，也没有真实上传 EPUB。首次手动启动前需安全设置 `DATABASE_URL`、至少 32 字符的 `SESSION_SECRET` 与只在管理员缺失时使用的 `ADMIN_INITIAL_PASSWORD`，然后由用户手动执行该 migration。
+
+**验证结果**：后端完整 Mock 以 16 个测试文件通过；无文件隔离复核为 149 个顶层测试、154 个含嵌套测试，0 失败。新增认证持久化 Repository、HTTP 权限、会话租户覆盖、Milvus 书名查询、稳定上传 ID、invalid file、失败清理、版本冲突和 append-only delegation 覆盖。前端 2 个测试文件、9/9 通过，覆盖登录/退出、角色可见性、管理员改密/上传、书名及既有问答/CRUD；Vite 生产构建成功。真实浏览器登录、PostgreSQL migration、Milvus 元数据和真实 EPUB 上传待用户验收。
 
 ### 后续阶段（本阶段不实施）
 

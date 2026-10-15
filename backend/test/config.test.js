@@ -13,6 +13,13 @@ test("getConfig applies the EPUB RAG defaults", () => {
   const config = getConfig(validEnv);
   assert.equal(config.http.host, "127.0.0.1");
   assert.equal(config.http.port, 3000);
+  assert.equal(config.auth.adminInitialPassword, "");
+  assert.equal(config.auth.sessionSecret, "");
+  assert.equal(config.auth.secureCookie, false);
+  assert.equal(config.auth.sessionTtlSeconds, 604800);
+  assert.equal(config.auth.loginWindowMs, 900000);
+  assert.equal(config.auth.loginMaxFailures, 5);
+  assert.equal(config.uploads.epubMaxBytes, 25 * 1024 * 1024);
   assert.equal(config.milvus.collectionName, "ebook_collection");
   assert.equal(config.model.embeddingDimension, 1024);
   assert.equal(config.model.requestTimeoutMs, 60000);
@@ -56,6 +63,33 @@ test("getConfig validates HTTP listen settings", () => {
   assert.throws(
     () => getConfig({ ...validEnv, HTTP_PORT: "70000" }),
     /HTTP_PORT/u,
+  );
+});
+
+test("getConfig validates authentication and EPUB upload limits", () => {
+  const config = getConfig({
+    ...validEnv,
+    NODE_ENV: "production",
+    ADMIN_INITIAL_PASSWORD: "  keep surrounding spaces  ",
+    SESSION_SECRET: "session-secret-value",
+    AUTH_SESSION_TTL_SECONDS: "3600",
+    AUTH_LOGIN_WINDOW_MS: "60000",
+    AUTH_LOGIN_MAX_FAILURES: "3",
+    EPUB_UPLOAD_MAX_BYTES: "1048576",
+  });
+  assert.equal(config.auth.adminInitialPassword, "  keep surrounding spaces  ");
+  assert.equal(config.auth.secureCookie, true);
+  assert.equal(config.auth.sessionTtlSeconds, 3600);
+  assert.equal(config.auth.loginWindowMs, 60000);
+  assert.equal(config.auth.loginMaxFailures, 3);
+  assert.equal(config.uploads.epubMaxBytes, 1048576);
+  assert.throws(
+    () => getConfig({ ...validEnv, AUTH_LOGIN_MAX_FAILURES: "0" }),
+    /AUTH_LOGIN_MAX_FAILURES/u,
+  );
+  assert.throws(
+    () => getConfig({ ...validEnv, EPUB_UPLOAD_MAX_BYTES: "100" }),
+    /EPUB_UPLOAD_MAX_BYTES/u,
   );
 });
 

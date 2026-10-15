@@ -1,4 +1,8 @@
-import { NotesServiceError, validateNotesCommandInput } from "../notes/index.js";
+import { AuthServiceError } from "../auth/index.js";
+import { NotesServiceError } from "../notes/index.js";
+import { EbookLibraryError } from "../rag/ebook/library-service.js";
+import { EbookIngestionError } from "../rag/ebook/ingestion/index.js";
+import { EpubInputError } from "../rag/ebook/ingestion/epub-loader.js";
 import { isRagTimeoutError } from "../rag/shared/timeouts.js";
 
 const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
@@ -14,23 +18,18 @@ export class HttpError extends Error {
   }
 }
 
-function writeJson(response, status, payload) {
+function writeJson(response, status, payload, headers = {}) {
   const body = JSON.stringify(payload);
   response.writeHead(status, {
     "content-type": JSON_CONTENT_TYPE,
     "content-length": Buffer.byteLength(body),
     "x-content-type-options": "nosniff",
+    ...headers,
   });
   response.end(body);
 }
 
-async function readJson(request, bodyLimit) {
-  const contentType = String(request.headers["content-type"] ?? "")
-    .toLowerCase();
-  if (!contentType.startsWith("application/json")) {
-    throw new HttpError(415, "CONTENT_TYPE_UNSUPPORTED", "请求体必须是 JSON");
-  }
-
+async function readBuffer(request, bodyLimit) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
@@ -40,10 +39,21 @@ async function readJson(request, bodyLimit) {
     }
     chunks.push(chunk);
   }
-  if (!chunks.length) return {};
+  return Buffer.concat(chunks);
+}
+
+async function readJson(request, bodyLimit) {
+  const contentType = String(request.headers["content-type"] ?? "")
+    .toLowerCase();
+  if (!contentType.startsWith("application/json")) {
+    throw new HttpError(415, "CONTENT_TYPE_UNSUPPORTED", "请求体必须是 JSON");
+  }
+
+  const buffer = await readBuffer(request, bodyLimit);
+  if (!buffer.length) return {};
 
   try {
-    const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const value = JSON.parse(buffer.toString("utf8"));
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       throw new Error("JSON object required");
     }
@@ -51,6 +61,36 @@ async function readJson(request, bodyLimit) {
   } catch {
     throw new HttpError(400, "JSON_INVALID", "请求体不是有效的 JSON 对象");
   }
+}
+
+async function readEpubUpload(request, maxFileBytes) {
+  const contentType = String(request.headers["content-type"] ?? "");
+  if (!contentType.toLowerCase().startsWith("multipart/form-data;")) {
+    throw new HttpError(415, "CONTENT_TYPE_UNSUPPORTED", "上传请求必须使用 multipart/form-data");
+  }
+  const buffer = await readBuffer(request, maxFileBytes + (256 * 1024));
+  let form;
+  try {
+    form = await new Request("http://127.0.0.1/api/ebooks/upload", {
+      method: "POST",
+      headers: { "content-type": contentType },
+      body: buffer,
+    }).formData();
+  } catch {
+    throw new HttpError(400, "MULTIPART_INVALID", "上传请求无法解析");
+  }
+  const file = form.get("file");
+  if (!file || typeof file.arrayBuffer !== "function") {
+    throw new HttpError(400, "EPUB_FILE_REQUIRED", "请选择 EPUB 文件");
+  }
+  if (file.size > maxFileBytes) {
+    throw new HttpError(413, "EPUB_FILE_TOO_LARGE", "EPUB 文件超过大小限制");
+  }
+  return {
+    fileName: file.name,
+    mimeType: file.type,
+    bytes: Buffer.from(await file.arrayBuffer()),
+  };
 }
 
 function question(value) {
@@ -95,6 +135,24 @@ function noteIdFromPath(pathname, suffix = "") {
 function statusForError(error) {
   if (error instanceof HttpError) return error.status;
   if (isRagTimeoutError(error)) return 504;
+  if (error instanceof AuthServiceError) {
+    if (["AUTH_REQUIRED", "INVALID_CREDENTIALS"].includes(error.code)) return 401;
+    if (error.code === "FORBIDDEN") return 403;
+    if (error.code === "AUTH_RATE_LIMITED") return 429;
+    if (error.code === "INPUT_INVALID") return 400;
+    return 500;
+  }
+  if (error instanceof EbookLibraryError) {
+    if (error.code === "EPUB_FILE_TOO_LARGE") return 413;
+    if (["INPUT_INVALID", "EPUB_FILE_INVALID"].includes(error.code)) return 400;
+    return 500;
+  }
+  if (error instanceof EpubInputError) return 400;
+  if (error instanceof EbookIngestionError) {
+    if (error.code === "INPUT_INVALID") return 400;
+    if (["BOOK_ALREADY_EXISTS", "BOOK_VERSION_CONFLICT", "BOOK_PARTIALLY_IMPORTED"].includes(error.code)) return 409;
+    return 500;
+  }
   if (error instanceof NotesServiceError) {
     if (error.code === "NOTE_NOT_FOUND") return 404;
     if (error.code === "SYNC_NOT_PENDING") return 409;
@@ -104,7 +162,14 @@ function statusForError(error) {
 }
 
 function publicError(error) {
-  if (error instanceof HttpError || error instanceof NotesServiceError) {
+  if (
+    error instanceof HttpError
+    || error instanceof AuthServiceError
+    || error instanceof NotesServiceError
+    || error instanceof EbookLibraryError
+    || error instanceof EpubInputError
+    || error instanceof EbookIngestionError
+  ) {
     return { code: error.code, message: error.message };
   }
   if (isRagTimeoutError(error)) {
@@ -152,19 +217,18 @@ function safeTimeoutDiagnostics(error) {
   };
 }
 
-function validatedUserId(value) {
-  return validateNotesCommandInput("list", { userId: value, limit: 1 }).userId;
-}
-
 export function createHttpHandler({
   ebookRag,
   notesRag,
   notesService,
+  authService,
+  ebookLibrary,
   logger = console,
   bodyLimit = DEFAULT_BODY_LIMIT,
+  epubUploadMaxBytes = 25 * 1024 * 1024,
 }) {
-  if (!ebookRag || !notesRag || !notesService) {
-    throw new Error("HTTP API 缺少 ebookRag、notesRag 或 notesService");
+  if (!ebookRag || !notesRag || !notesService || !authService || !ebookLibrary) {
+    throw new Error("HTTP API 缺少 RAG、认证或 EPUB 管理依赖");
   }
 
   return async function handleRequest(request, response) {
@@ -185,6 +249,84 @@ export function createHttpHandler({
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/api/auth/login") {
+        const body = await readJson(request, bodyLimit);
+        const result = await authService.login({
+          email: body.email,
+          password: body.password,
+          clientKey: request.socket?.remoteAddress ?? "local",
+        });
+        writeJson(response, 200, { user: result.user }, {
+          "set-cookie": authService.sessionCookie(result.token),
+          "cache-control": "no-store",
+        });
+        return;
+      }
+
+      const currentUser = await authService.authenticate(request.headers.cookie);
+
+      if (request.method === "GET" && url.pathname === "/api/auth/me") {
+        if (!currentUser) {
+          throw new AuthServiceError("AUTH_REQUIRED", "请先登录");
+        }
+        writeJson(response, 200, { user: authService.publicUser(currentUser) }, {
+          "cache-control": "no-store",
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+        await authService.logout(request.headers.cookie);
+        writeJson(response, 200, { loggedOut: true }, {
+          "set-cookie": authService.clearSessionCookie(),
+          "cache-control": "no-store",
+        });
+        return;
+      }
+
+      if (!currentUser) {
+        throw new AuthServiceError("AUTH_REQUIRED", "请先登录");
+      }
+
+      if (request.method === "PATCH" && url.pathname === "/api/admin/tester-password") {
+        const body = await readJson(request, bodyLimit);
+        if (body.password !== body.confirmPassword) {
+          throw new AuthServiceError("INPUT_INVALID", "两次输入的新密码不一致");
+        }
+        const result = await authService.changeTesterPassword(
+          currentUser,
+          body.password,
+        );
+        writeJson(response, 200, result);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/ebooks/upload") {
+        if (currentUser.role !== "admin") {
+          throw new AuthServiceError("FORBIDDEN", "仅管理员可以上传 EPUB");
+        }
+        const upload = await readEpubUpload(request, epubUploadMaxBytes);
+        const result = await ebookLibrary.upload(upload);
+        writeJson(response, 201, { book: result });
+        return;
+      }
+
+      const bookMetadataMatch = url.pathname.match(/^\/api\/ebooks\/([^/]+)$/u);
+      if (request.method === "GET" && bookMetadataMatch) {
+        let bookId;
+        try {
+          bookId = decodeURIComponent(bookMetadataMatch[1]);
+        } catch {
+          throw new HttpError(400, "INPUT_INVALID", "bookId 无效");
+        }
+        const book = await ebookLibrary.getBookMetadata(bookId);
+        if (!book) {
+          throw new HttpError(404, "BOOK_NOT_FOUND", "未找到对应书籍");
+        }
+        writeJson(response, 200, { book });
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/qa/ebook") {
         const body = await readJson(request, bodyLimit);
         fixedKnowledgeBase(body.knowledgeBase, "ebook");
@@ -199,7 +341,7 @@ export function createHttpHandler({
         const body = await readJson(request, bodyLimit);
         fixedKnowledgeBase(body.knowledgeBase, "life_notes");
         const result = await notesRag.ask(question(body.question), {
-          userId: validatedUserId(body.userId),
+          userId: currentUser.notesUserId,
         });
         writeJson(response, 200, result);
         return;
@@ -208,14 +350,17 @@ export function createHttpHandler({
       if (request.method === "POST" && url.pathname === "/api/notes") {
         const body = await readJson(request, bodyLimit);
         fixedKnowledgeBase(body.knowledgeBase, "life_notes");
-        const result = await notesService.create(body);
+        const result = await notesService.create({
+          ...body,
+          userId: currentUser.notesUserId,
+        });
         writeJson(response, 201, result);
         return;
       }
 
       if (request.method === "GET" && url.pathname === "/api/notes") {
         const notes = await notesService.list({
-          userId: url.searchParams.get("userId"),
+          userId: currentUser.notesUserId,
           limit: url.searchParams.get("limit") ?? undefined,
         });
         writeJson(response, 200, { notes });
@@ -228,7 +373,7 @@ export function createHttpHandler({
         fixedKnowledgeBase(body.knowledgeBase, "life_notes");
         const result = await notesService.retry({
           noteId: retryNoteId,
-          userId: body.userId,
+          userId: currentUser.notesUserId,
         });
         writeJson(response, 200, result);
         return;
@@ -238,7 +383,7 @@ export function createHttpHandler({
       if (request.method === "GET" && noteId) {
         const note = await notesService.get({
           noteId,
-          userId: url.searchParams.get("userId"),
+          userId: currentUser.notesUserId,
         });
         if (!note) throw new NotesServiceError("NOTE_NOT_FOUND", "笔记不存在");
         writeJson(response, 200, { note });
@@ -247,14 +392,18 @@ export function createHttpHandler({
       if (request.method === "PATCH" && noteId) {
         const body = await readJson(request, bodyLimit);
         fixedKnowledgeBase(body.knowledgeBase, "life_notes");
-        const result = await notesService.update({ ...body, noteId });
+        const result = await notesService.update({
+          ...body,
+          noteId,
+          userId: currentUser.notesUserId,
+        });
         writeJson(response, 200, result);
         return;
       }
       if (request.method === "DELETE" && noteId) {
         const result = await notesService.delete({
           noteId,
-          userId: url.searchParams.get("userId"),
+          userId: currentUser.notesUserId,
         });
         writeJson(response, 200, result);
         return;

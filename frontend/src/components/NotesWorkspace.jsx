@@ -51,9 +51,7 @@ function NoteItem({ note, selected, busy, onOpen, onRetry }) {
   );
 }
 
-export function NotesWorkspace() {
-  const [userId, setUserId] = useState("demo-user");
-  const [activeUserId, setActiveUserId] = useState("");
+export function NotesWorkspace({ currentUser }) {
   const [notes, setNotes] = useState([]);
   const [listStatus, setListStatus] = useState("idle");
   const [listError, setListError] = useState("");
@@ -67,48 +65,30 @@ export function NotesWorkspace() {
   const [qaError, setQaError] = useState("");
   const [qaResult, setQaResult] = useState(null);
 
-  const loadNotes = useCallback(async (scopeUserId) => {
-    const normalized = String(scopeUserId ?? "").trim();
-    if (!normalized) {
-      setListError("请先填写 userId。");
-      setListStatus("error");
-      return;
-    }
+  const loadNotes = useCallback(async () => {
     setListStatus("loading");
     setListError("");
     setSelectedNote(null);
     try {
-      const result = await api.listNotes({ userId: normalized });
+      const result = await api.listNotes();
       setNotes(result.notes ?? []);
-      setActiveUserId(normalized);
       setListStatus("success");
     } catch (error) {
       setNotes([]);
-      setActiveUserId("");
       setListError(error.message);
       setListStatus("error");
     }
   }, []);
 
   useEffect(() => {
-    loadNotes("demo-user");
+    loadNotes();
   }, [loadNotes]);
-
-  function changeUserId(event) {
-    setUserId(event.target.value);
-    setActiveUserId("");
-    setNotes([]);
-    setSelectedNote(null);
-    setEditor(null);
-    setNotice(null);
-    setDeleteRecovery(null);
-  }
 
   async function openNote(note) {
     setAction(`open:${note.noteId}`);
     setListError("");
     try {
-      const result = await api.getNote({ noteId: note.noteId, userId: activeUserId });
+      const result = await api.getNote({ noteId: note.noteId });
       setSelectedNote(result.note);
       setEditor(null);
     } catch (error) {
@@ -119,19 +99,13 @@ export function NotesWorkspace() {
   }
 
   async function saveNote(values) {
-    const scopeUserId = userId.trim();
-    if (!scopeUserId) {
-      setListError("请先填写 userId。");
-      return;
-    }
     setAction("save");
     setListError("");
     try {
       const result = editor.mode === "create"
-        ? await api.createNote({ userId: scopeUserId, ...values })
+        ? await api.createNote(values)
         : await api.updateNote({
           noteId: editor.note.noteId,
-          userId: scopeUserId,
           ...values,
         });
       setNotice({
@@ -142,7 +116,7 @@ export function NotesWorkspace() {
       });
       setEditor(null);
       setSelectedNote(result.note ?? null);
-      await loadNotes(scopeUserId);
+      await loadNotes();
     } catch (error) {
       setListError(error.message);
     } finally {
@@ -151,18 +125,17 @@ export function NotesWorkspace() {
   }
 
   async function retryNote(noteId) {
-    const scopeUserId = userId.trim();
     setAction(`retry:${noteId}`);
     setListError("");
     try {
-      const result = await api.retryNote({ noteId, userId: scopeUserId });
+      const result = await api.retryNote({ noteId });
       const synced = result.sync?.status === "synced";
       setNotice({
         type: synced ? "success" : "warning",
         text: synced ? "索引同步重试成功。" : "同步仍未完成，请检查后端服务状态后重试。",
       });
       if (synced && deleteRecovery?.noteId === noteId) setDeleteRecovery(null);
-      await loadNotes(scopeUserId);
+      await loadNotes();
     } catch (error) {
       setListError(error.message);
     } finally {
@@ -178,7 +151,6 @@ export function NotesWorkspace() {
     try {
       const result = await api.deleteNote({
         noteId: selectedNote.noteId,
-        userId: userId.trim(),
       });
       if (result.sync?.status !== "synced") {
         setDeleteRecovery({
@@ -190,7 +162,7 @@ export function NotesWorkspace() {
         setNotice({ type: "success", text: "笔记及其索引已删除。" });
       }
       setSelectedNote(null);
-      await loadNotes(userId.trim());
+      await loadNotes();
     } catch (error) {
       setListError(error.message);
     } finally {
@@ -200,10 +172,9 @@ export function NotesWorkspace() {
 
   async function askNotes(event) {
     event.preventDefault();
-    const normalizedUserId = userId.trim();
     const normalizedQuestion = question.trim();
-    if (!normalizedUserId || !normalizedQuestion) {
-      setQaError("请填写 userId 和问题。");
+    if (!normalizedQuestion) {
+      setQaError("请填写问题。");
       return;
     }
     setQaStatus("loading");
@@ -211,7 +182,6 @@ export function NotesWorkspace() {
     setQaResult(null);
     try {
       const result = await api.askNotes({
-        userId: normalizedUserId,
         question: normalizedQuestion,
       });
       setQaResult(result);
@@ -222,7 +192,7 @@ export function NotesWorkspace() {
     }
   }
 
-  const currentScope = activeUserId || userId.trim();
+  const currentScope = currentUser?.email ?? "当前账号";
 
   return (
     <div className="notes-page">
@@ -236,14 +206,11 @@ export function NotesWorkspace() {
       </div>
 
       <section className="scope-toolbar">
-        <div className="field-group scope-field">
-          <label htmlFor="user-id">当前用户范围</label>
-          <input id="user-id" value={userId} onChange={changeUserId} autoComplete="off" />
-        </div>
-        <button className="secondary-button" type="button" onClick={() => loadNotes(userId)}>
+        <div><strong>当前个人空间</strong><p>{currentScope}</p></div>
+        <button className="secondary-button" type="button" onClick={() => loadNotes()}>
           加载笔记
         </button>
-        <p><strong>注意：</strong>userId 仅用于数据隔离，不是登录认证。</p>
+        <p>笔记范围由登录会话确定，客户端不能切换其他用户。</p>
       </section>
 
       {notice && <div className={`alert ${notice.type}-alert`}>{notice.text}</div>}
@@ -329,7 +296,7 @@ export function NotesWorkspace() {
         <section className="notes-qa panel-card">
           <div className="section-heading">
             <div><span className="eyebrow">Ask Your Notes</span><h2>笔记 AI 问答</h2></div>
-            <span className="scope-chip">{currentScope || "未设置 userId"}</span>
+            <span className="scope-chip">{currentScope}</span>
           </div>
           <form onSubmit={askNotes}>
             <div className="field-group">

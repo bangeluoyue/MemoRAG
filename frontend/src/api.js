@@ -7,13 +7,19 @@ export class ApiError extends Error {
   }
 }
 
-async function request(path, { method = "GET", body, signal } = {}) {
+async function request(path, {
+  method = "GET",
+  body,
+  signal,
+  formData,
+} = {}) {
   let response;
   try {
     response = await fetch(path, {
       method,
       signal,
-      ...(body === undefined ? {} : {
+      credentials: "same-origin",
+      ...(formData ? { body: formData } : body === undefined ? {} : {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       }),
@@ -47,6 +53,41 @@ function encoded(value) {
 }
 
 export const api = {
+  login({ email, password }) {
+    return request("/api/auth/login", {
+      method: "POST",
+      body: { email, password },
+    });
+  },
+
+  me() {
+    return request("/api/auth/me");
+  },
+
+  logout() {
+    return request("/api/auth/logout", { method: "POST" });
+  },
+
+  changeTesterPassword({ password, confirmPassword }) {
+    return request("/api/admin/tester-password", {
+      method: "PATCH",
+      body: { password, confirmPassword },
+    });
+  },
+
+  getBook(bookId, { signal } = {}) {
+    return request(`/api/ebooks/${encoded(bookId)}`, { signal });
+  },
+
+  uploadEpub(file) {
+    const formData = new FormData();
+    formData.append("file", file);
+    return request("/api/ebooks/upload", {
+      method: "POST",
+      formData,
+    });
+  },
+
   askEbook({ question, bookId, signal }) {
     return request("/api/qa/ebook", {
       method: "POST",
@@ -55,46 +96,46 @@ export const api = {
     });
   },
 
-  askNotes({ question, userId, signal }) {
+  askNotes({ question, signal }) {
     return request("/api/qa/notes", {
       method: "POST",
       signal,
-      body: { question, userId, knowledgeBase: "life_notes" },
+      body: { question, knowledgeBase: "life_notes" },
     });
   },
 
-  listNotes({ userId, limit = 100, signal }) {
-    return request(`/api/notes?userId=${encoded(userId)}&limit=${limit}`, { signal });
+  listNotes({ limit = 100, signal } = {}) {
+    return request(`/api/notes?limit=${limit}`, { signal });
   },
 
-  getNote({ noteId, userId, signal }) {
-    return request(`/api/notes/${encoded(noteId)}?userId=${encoded(userId)}`, { signal });
+  getNote({ noteId, signal }) {
+    return request(`/api/notes/${encoded(noteId)}`, { signal });
   },
 
-  createNote({ userId, title, content }) {
+  createNote({ title, content }) {
     return request("/api/notes", {
       method: "POST",
-      body: { userId, title, content, knowledgeBase: "life_notes" },
+      body: { title, content, knowledgeBase: "life_notes" },
     });
   },
 
-  updateNote({ noteId, userId, title, content }) {
+  updateNote({ noteId, title, content }) {
     return request(`/api/notes/${encoded(noteId)}`, {
       method: "PATCH",
-      body: { userId, title, content, knowledgeBase: "life_notes" },
+      body: { title, content, knowledgeBase: "life_notes" },
     });
   },
 
-  deleteNote({ noteId, userId }) {
-    return request(`/api/notes/${encoded(noteId)}?userId=${encoded(userId)}`, {
+  deleteNote({ noteId }) {
+    return request(`/api/notes/${encoded(noteId)}`, {
       method: "DELETE",
     });
   },
 
-  retryNote({ noteId, userId }) {
+  retryNote({ noteId }) {
     return request(`/api/notes/${encoded(noteId)}/retry`, {
       method: "POST",
-      body: { userId, knowledgeBase: "life_notes" },
+      body: { knowledgeBase: "life_notes" },
     });
   },
 };

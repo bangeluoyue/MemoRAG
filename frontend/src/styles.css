@@ -232,6 +232,30 @@ a {
   font-weight: 600;
 }
 
+.topbar-account {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+}
+
+.account-identity {
+  max-width: 260px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.text-button {
+  padding: 7px 10px;
+  border: 0;
+  color: var(--accent-dark);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 750;
+}
+
 .mobile-brand,
 .mobile-switch {
   display: none;
@@ -500,6 +524,10 @@ a {
   background: var(--surface-soft);
 }
 
+.scope-display + .scope-display {
+  margin-top: 10px;
+}
+
 .scope-display span,
 .scope-display strong {
   display: block;
@@ -538,6 +566,27 @@ a {
   color: #334a94;
   font-size: 11px;
 }
+
+.upload-form {
+  display: grid;
+  gap: 10px;
+}
+
+.upload-form input[type="file"] {
+  width: 100%;
+  color: #4f5e56;
+  font-size: 10px;
+}
+
+.inline-error,
+.inline-success {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.inline-error { color: var(--danger); }
+.inline-success { color: var(--accent-dark); }
 
 .alert,
 .processing-card,
@@ -1130,6 +1179,72 @@ a {
   border-radius: 12px;
 }
 
+.session-loading,
+.login-page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+}
+
+.session-loading {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.login-page {
+  background:
+    radial-gradient(circle at 20% 20%, rgba(22, 133, 106, 0.12), transparent 30%),
+    #f3f5f1;
+}
+
+.login-card {
+  display: grid;
+  width: min(430px, 100%);
+  gap: 20px;
+  padding: 34px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: white;
+  box-shadow: var(--shadow);
+}
+
+.login-brand {
+  width: max-content;
+  padding: 10px 14px 10px 10px;
+  border-radius: 14px;
+  color: white;
+  background: var(--nav);
+}
+
+.login-card h1 {
+  margin: 6px 0 8px;
+  font-family: Georgia, serif;
+}
+
+.login-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.login-button {
+  width: 100%;
+}
+
+.admin-settings {
+  max-width: 720px;
+}
+
+.settings-form {
+  display: grid;
+  max-width: 460px;
+  gap: 18px;
+}
+
 @media (max-width: 1120px) {
   .notes-grid {
     grid-template-columns: 1fr;
@@ -1221,6 +1336,10 @@ a {
 }
 
 @media (max-width: 640px) {
+  .account-identity {
+    max-width: 105px;
+  }
+
   .content-area {
     padding: 22px 14px 48px;
   }

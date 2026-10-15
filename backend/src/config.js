@@ -103,6 +103,41 @@ export function getConfig(env = process.env) {
         maximum: 65535,
       }),
     },
+    auth: {
+      adminInitialPassword: env.ADMIN_INITIAL_PASSWORD || "",
+      sessionSecret: env.SESSION_SECRET?.trim() || "",
+      secureCookie: booleanValue(
+        env,
+        "AUTH_COOKIE_SECURE",
+        env.NODE_ENV?.trim().toLowerCase() === "production",
+      ),
+      sessionTtlSeconds: boundedInteger(
+        env,
+        "AUTH_SESSION_TTL_SECONDS",
+        7 * 24 * 60 * 60,
+        { minimum: 300, maximum: 30 * 24 * 60 * 60 },
+      ),
+      loginWindowMs: boundedInteger(
+        env,
+        "AUTH_LOGIN_WINDOW_MS",
+        15 * 60 * 1000,
+        { minimum: 1000, maximum: 24 * 60 * 60 * 1000 },
+      ),
+      loginMaxFailures: boundedInteger(
+        env,
+        "AUTH_LOGIN_MAX_FAILURES",
+        5,
+        { minimum: 1, maximum: 20 },
+      ),
+    },
+    uploads: {
+      epubMaxBytes: boundedInteger(
+        env,
+        "EPUB_UPLOAD_MAX_BYTES",
+        25 * 1024 * 1024,
+        { minimum: 1024, maximum: 100 * 1024 * 1024 },
+      ),
+    },
     model: {
       apiKey: modelApiKey,
       baseUrl: env.OPENAI_BASE_URL?.trim() || undefined,
