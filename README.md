@@ -25,6 +25,11 @@ EPUB
 
 历史 coverage、依赖改写、缺口恢复和复杂 evaluate Graph 仍保留在源码与 Git 历史中，但不再是默认问答路径。
 
+## 当前验收状态
+
+- Notes Hybrid RAG 已完成一次本机真实验收：两条临时笔记经 HTTP 写入 PostgreSQL，并同步到 ES/Milvus；ES 与 Milvus 各召回两条，RRF 去重后只调用一次生成模型，答案和引用均受原文支持。验收数据随后按精确 `note_id` 删除，三端均无残留。
+- EPUB 默认 Graph 已确认不会把 route/decision 的推测性 `reason` 注入最终生成 Prompt；生成 Prompt 进一步约束人物关系、行为主客体及“人物认知/客观事实”的区分。该修复已通过 Mock，尚未重复真实 E2，不能据此宣称已彻底消除幻觉。
+
 ## 本地开发
 
 ```bash

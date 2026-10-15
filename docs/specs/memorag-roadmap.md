@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v1.11（2026-10-15）
+> 版本：v1.12（2026-10-15）
 >
-> 状态：**默认架构已精简为两个独立服务：EPUB 使用保留三态路由、受控拆题、多轮 Milvus 检索、轻量决策、可选 Bocha 和引用生成的核心 Agentic RAG；生活笔记使用 ES + Milvus + RRF + 可选 Rerank + 单次生成的 Hybrid RAG。复杂 coverage/evaluate/依赖改写 Graph 仅作为历史实现保留，不再进入默认问答。HTTP、React、EPUB 入库、笔记 CRUD 与双索引同步保持兼容。本版仅完成 Mock 与构建验收，精简后真实问答尚待单独授权。**
+> 状态：**默认架构已精简为两个独立服务。EPUB 保留三态路由、受控拆题、多轮 Milvus 检索、轻量决策、可选 Bocha 和引用生成；生成只使用原始问题与实际证据，不注入 route/decision reason，并新增人物关系与认知状态的通用约束。生活笔记使用 ES + Milvus + RRF + 可选 Rerank + 单次生成，已完成一次本机真实双源问答及三端精确清理验收。复杂 coverage/evaluate/依赖改写 Graph 仍仅作历史实现。EPUB Prompt 修复尚未重复真实 E2，不宣称已彻底解决幻觉。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -1023,6 +1023,18 @@ E2 与先前约 10.5 秒的 `sdk_or_upstream` 超时不同：本次是 MemoRAG �
 **兼容性与测试**：HTTP 和 React 继续使用 `answer/sources/webSources/route/trace`；`bookId`、`userId + knowledgeBase`、引用快照和超时错误保持兼容。Mock 明确覆盖 EPUB 三态路由、拆题、多轮检索、依赖实体回退、决策超时、预算终止、Bocha 成功/失败、Rerank 与引用校验，以及 Notes 双源各一次召回、RRF、Rerank 成功/回退、一次生成、空召回和租户隔离。后端 14 个测试文件、141/141（含嵌套子测试）通过；前端 2 个测试文件、6/6 通过；Vite 生产构建成功。
 
 **验收边界**：本轮没有连接或修改 PostgreSQL、ES、Milvus，没有触碰 `ebook_collection` 的既有数据，也没有调用真实 LLM、Embedding、Rerank、Bocha 或 LangSmith。精简后的 EPUB 单跳/多跳/联网、生活笔记 Hybrid 问答和 Rerank 质量仍需用户另行授权最少量真实验收；在此之前不宣称已达到公网部署标准。
+
+#### 生成质量最小修复与 NotesRag 真实验收（v1.12）
+
+**EPUB 问题与修复**：v1.11 真实 E2 能正常走 `single_retrieval → decision → generate`，但答案把阿朱之父误写成萧峰之父，并混淆人物当时的认知与客观事实。代码检查确认 `routeReason` 与轻量决策 `evaluation.reason` 只保留在 state/trace，`core-generate.js` 没有把二者注入生成 Prompt；因此不存在中间 reason 直接污染。已确认的缺口是生成约束不够具体：只笼统禁止虚构关系，没有要求核对行为主客体、避免代词归属歧义或区分人物相信/听说/受骗后的认知与原文客观事实。
+
+最小修改只增强两处 Prompt：轻量决策的 `reason` 仅描述资料是否足够和下一步原因，不复述或推导情节；最终生成逐项核对人物身份、亲属关系、行为主客体和因果，必要时直称人物，并明确区分人物认知与客观事实。最终证据仍只有原始问题、实际本地片段和可选网页资料，没有增加事实校验节点、调用次数、重试、超时或 coverage。新增 Mock 使用不可验证 marker 证明 route/decision reason 仍可在 trace 中观察、但不会进入生成 Prompt，并检查上述通用约束存在。Prompt 改动只能降低该类错误风险，尚未重复真实 E2，不能声称彻底消除幻觉。
+
+**NotesRag 真实验收**：在唯一临时 `userId` 下，通过现有 HTTP API 创建两条非敏感笔记；两次创建均返回 HTTP 201，PostgreSQL 状态、ES 目标和 Milvus 目标均为 `synced`。精确 ID 只读检查确认两条 `note_id` 在三端一一对应。唯一一次 `/api/qa/notes` 返回 HTTP 200、耗时 1.481 秒；ES 与 Milvus 各召回 2 条，RRF 按 `note_id` 去重为 2 条，Rerank 为 `disabled`，无拆题、联网、coverage 或 EPUB Graph，生成模型仅调用 1 次。答案正确给出负责人林晓和周五下午四点，两项分别由对应笔记原文及合法引用直接支持。
+
+**清理与回归**：两条笔记均通过 HTTP DELETE 按精确 `note_id + userId` 删除，ES/Milvus 删除状态均为 `synced`，PostgreSQL 均 `purged`；随后三端精确只读查询均为零残留，没有扩大删除范围或修改 Schema。后端官方 `npm test` 的 14/14 测试文件通过；以无文件隔离模式复核为 142/142（含 5 个嵌套子测试）。前端 2 个测试文件、6/6 通过，Vite 生产构建成功。LangSmith、Bocha、EPUB Rerank、Notes Rerank 均关闭；没有修改 `ebook_collection`。
+
+**当前边界**：生活笔记 Hybrid RAG 已达到本机最小演示标准。EPUB 默认路径的真实执行与引用能力已有历史成功样例，本次生成约束修复只完成 Mock，仍需用户另行授权最多一次固定 E2 才能确认该具体人物关系错误是否改善；无需自动执行 E3、Bocha、Rerank 或批量评测。
 
 ### 后续阶段（本阶段不实施）
 

@@ -27,6 +27,7 @@ webSearch → generate
 - 多跳计划最多执行 `MAX_SUB_QUESTIONS` 项，并受 `MAX_RETRIEVALS` 硬上限限制。
 - 依赖实体未确认的子问题不会把占位符或模型猜测的实体交给 Retriever，而是回退到原始完整问题。
 - 默认轻量决策只返回 `retrieve / web_search / generate`。`DECISION_TIMEOUT_MS` 默认 15000 ms；超时或格式异常时不重试，而是按剩余预算安全回退。这个等待上限不代表模型端点的延迟问题已经解决。
+- 路由与轻量决策的 `reason` 仅用于流程选择和 trace，不作为事实证据传给最终生成；生成只接收原始问题、实际检索片段和可选网页证据，并要求核对人物关系、行为主客体及“人物认知/客观事实”的区别。
 - 当前复杂 coverage/evaluate/依赖改写 Graph 保留在 `src/rag/ebook/agent-graph.js`，但不是默认入口。
 
 ### 生活笔记 Hybrid RAG
@@ -126,6 +127,8 @@ npm run notes -- create --user-id demo-user --content "演示笔记"
 
 模型超时返回安全的 `MODEL_TIMEOUT`/HTTP 504，并保留 `stage` 与 `timeoutSource`；其他认证、限流和连接错误不会被误判为模型超时。API 不返回密钥、连接字符串、完整 Prompt 或上游原始异常。
 
-## 未验证边界
+## 验收边界
 
-本次精简仅使用 Mock 验证。真实 EPUB 路由/轻量决策、Bocha、Notes Rerank 质量及精简后浏览器全链路均需另行授权做最少量验收。15 秒决策超时只是等待控制和安全降级，不是模型服务稳定性修复。
+Notes Hybrid RAG 已在本机以两条非敏感临时笔记完成真实 HTTP 验收：PostgreSQL/ES/Milvus 同步、ES+Milvus 双源召回、RRF、一次生成、引用和精确清理均通过。Rerank 在该次验收中保持关闭。
+
+EPUB 生成证据边界和中间 reason 隔离已有 Mock 覆盖；人物关系与认知状态的通用 Prompt 约束尚未重复真实 E2，因此不能宣称已消除模型幻觉。真实 Bocha、Notes Rerank、EPUB 多跳质量及精简后完整浏览器链路仍需按需做最少量验收。15 秒决策超时只是等待控制和安全降级，不是模型服务稳定性修复。

@@ -194,6 +194,38 @@ test("single-retrieval EPUB path uses one Milvus retrieval and actual sources", 
   assert.equal(result.trace.execution.localRetrievalCount, 1);
 });
 
+test("EPUB generation uses only the question and retrieved evidence, not routing reasons", async () => {
+  const routeMarker = "UNVERIFIED_ROUTE_RELATION";
+  const decisionMarker = "UNVERIFIED_DECISION_RELATION";
+  const model = new ScriptedModel({
+    route: { mode: "single_retrieval", reason: routeMarker },
+    decisions: [{ nextAction: "generate", reason: decisionMarker }],
+    answers: ["只能确认资料直接支持的关系 [本地1]。"],
+  });
+  const rag = createMockRag({
+    model,
+    retriever: {
+      async search() {
+        return [bookDocument("doc-evidence", "原文明确记载的人物与事件。")];
+      },
+    },
+  });
+
+  const result = await rag.ask("请根据原文核对人物关系");
+  const generationPrompt = model.prompts.at(-1);
+
+  assert.equal(result.route.reason, routeMarker);
+  assert.equal(result.trace.evaluation.reason, decisionMarker);
+  assert.equal(model.calls.generate, 1);
+  assert.match(generationPrompt, /请根据原文核对人物关系/u);
+  assert.match(generationPrompt, /原文明确记载的人物与事件/u);
+  assert.doesNotMatch(generationPrompt, new RegExp(routeMarker, "u"));
+  assert.doesNotMatch(generationPrompt, new RegExp(decisionMarker, "u"));
+  assert.match(generationPrompt, /行为主体、行为对象和因果关系/u);
+  assert.match(generationPrompt, /人物当时相信、听说、猜测或受骗后认为的内容/u);
+  assert.match(generationPrompt, /流程决策、常识或模型记忆/u);
+});
+
 test("multi-hop EPUB path decomposes and performs bounded multiple retrievals", async () => {
   const queries = [];
   const model = new ScriptedModel({
