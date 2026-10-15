@@ -120,7 +120,9 @@ export function buildAgentResponse(result, tracing, { mapSource } = {}) {
             ))?.status)
             .filter(Boolean)[0]
           ?? (retrieval.documentIds.length
-            ? "retrieved_not_supportive"
+            ? ((result.coverage?.length ?? 0)
+              ? "retrieved_not_supportive"
+              : "retrieved")
             : "no_hits_for_query")
         ),
         errorCategory: retrieval.errorCategory ?? null,

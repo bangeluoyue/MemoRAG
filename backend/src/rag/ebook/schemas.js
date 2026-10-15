@@ -46,3 +46,12 @@ export const EvaluateSchema = z.object({
   reason: z.string(),
   web_query: z.string().optional(),
 });
+
+// The default EPUB graph uses this deliberately small contract. The richer
+// EvaluateSchema remains available to the historical graph, but is not part of
+// the default request path.
+export const CoreDecisionSchema = z.object({
+  nextAction: z.enum(["retrieve", "web_search", "generate"]),
+  reason: z.string(),
+  web_query: z.string().optional(),
+});

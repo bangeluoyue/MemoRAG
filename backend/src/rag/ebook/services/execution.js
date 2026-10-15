@@ -3,6 +3,7 @@ const LLM_CALL_CATEGORIES = [
   "decompose",
   "rewrite",
   "evaluate",
+  "decision",
   "generate",
   "citationCorrection",
 ];

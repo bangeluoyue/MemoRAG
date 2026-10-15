@@ -1,10 +1,39 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  AgentInvocationTimeoutError,
+  invokeRagWithTimeout,
   invokeModelWithTimeout,
   ModelInvocationTimeoutError,
   TIMEOUT_SOURCES,
 } from "../src/rag/shared/timeouts.js";
+
+test("invokeRagWithTimeout returns successful operations unchanged", async () => {
+  const result = await invokeRagWithTimeout(async (signal) => {
+    assert.equal(signal.aborted, false);
+    return { ok: true };
+  }, { timeoutMs: 50 });
+  assert.deepEqual(result, { ok: true });
+});
+
+test("invokeRagWithTimeout aborts and classifies the whole request deadline", async () => {
+  let operationSignal;
+  await assert.rejects(
+    () => invokeRagWithTimeout(
+      async (signal) => new Promise((_, reject) => {
+        operationSignal = signal;
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      }),
+      { timeoutMs: 10 },
+    ),
+    (error) => error instanceof AgentInvocationTimeoutError
+      && error.code === "AGENT_TIMEOUT"
+      && error.timeoutMs === 10,
+  );
+  assert.equal(operationSignal.aborted, true);
+});
 
 function rejectingRunnable(error) {
   return {

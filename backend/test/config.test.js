@@ -30,6 +30,7 @@ test("getConfig applies the EPUB RAG defaults", () => {
   assert.equal(config.rag.maxSingleRetrievals, 2);
   assert.equal(config.rag.maxGapRecoveryAttempts, 1);
   assert.equal(config.rag.agentTimeoutMs, 120000);
+  assert.equal(config.rag.decisionTimeoutMs, 15000);
   assert.equal(config.langsmith.requested, false);
   assert.equal(config.langsmith.enabled, false);
   assert.equal(config.langsmith.contentMode, "metadata_only");
@@ -151,10 +152,12 @@ test("getConfig validates bounded LLM and whole-Agent timeouts", () => {
     LLM_TIMEOUT_MS: "45000",
     LLM_MAX_RETRIES: "1",
     AGENT_TIMEOUT_MS: "90000",
+    DECISION_TIMEOUT_MS: "12000",
   });
   assert.equal(config.model.requestTimeoutMs, 45000);
   assert.equal(config.model.maxRetries, 1);
   assert.equal(config.rag.agentTimeoutMs, 90000);
+  assert.equal(config.rag.decisionTimeoutMs, 12000);
   assert.throws(
     () => getConfig({ ...validEnv, LLM_TIMEOUT_MS: "999" }),
     /LLM_TIMEOUT_MS/u,
@@ -166,6 +169,10 @@ test("getConfig validates bounded LLM and whole-Agent timeouts", () => {
   assert.throws(
     () => getConfig({ ...validEnv, AGENT_TIMEOUT_MS: "600001" }),
     /AGENT_TIMEOUT_MS/u,
+  );
+  assert.throws(
+    () => getConfig({ ...validEnv, DECISION_TIMEOUT_MS: "999" }),
+    /DECISION_TIMEOUT_MS/u,
   );
 });
 

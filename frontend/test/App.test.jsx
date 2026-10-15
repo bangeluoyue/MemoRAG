@@ -10,7 +10,11 @@ function response(payload, { ok = true, status = 200 } = {}) {
 function answer({ notes = false } = {}) {
   return {
     answer: notes ? "体检安排在周五上午 [本地1]。" : "人物做出决定是为了保护朋友 [本地1]。",
-    route: { strategy: "complex", mode: "single_retrieval", reason: "一个问题即可检索" },
+    route: {
+      strategy: notes ? "hybrid" : "complex",
+      mode: "single_retrieval",
+      reason: notes ? "ES + Milvus + RRF" : "一个问题即可检索",
+    },
     sources: [{
       id: notes ? "note-1" : "doc-1",
       ...(notes
@@ -31,7 +35,7 @@ function answer({ notes = false } = {}) {
       retrievalCount: 1,
       execution: {
         totalDurationMs: 1250,
-        llmCallCount: 3,
+        llmCallCount: notes ? 1 : 3,
         localRetrievalCount: 1,
         rerankRequestCount: 0,
         webSearchCount: 0,

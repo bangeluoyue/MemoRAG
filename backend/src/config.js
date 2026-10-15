@@ -171,6 +171,10 @@ export function getConfig(env = process.env) {
         minimum: 1000,
         maximum: 600000,
       }),
+      decisionTimeoutMs: boundedInteger(env, "DECISION_TIMEOUT_MS", 15000, {
+        minimum: 1000,
+        maximum: 60000,
+      }),
     },
     rerank: {
       enabled: rerankEnabled,

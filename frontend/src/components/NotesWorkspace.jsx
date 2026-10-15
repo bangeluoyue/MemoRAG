@@ -230,7 +230,7 @@ export function NotesWorkspace() {
         <div>
           <span className="eyebrow">Life Notes Knowledge Base</span>
           <h1>生活笔记</h1>
-          <p>管理个人笔记，并使用混合检索 Agent 从自己的记录中问答。</p>
+          <p>管理个人笔记，并使用 ES + Milvus Hybrid RAG 从自己的记录中问答。</p>
         </div>
         <span className="knowledge-pill notes-pill">Notes · ES + Milvus</span>
       </div>
@@ -356,7 +356,7 @@ export function NotesWorkspace() {
             </div>
           )}
           {qaStatus === "idle" && !qaResult && (
-            <div className="muted-state qa-empty"><p>回答会显示引用笔记、检索次数和路由结果。</p></div>
+            <div className="muted-state qa-empty"><p>回答会显示引用笔记、检索次数和实际检索策略。</p></div>
           )}
           <AnswerPanel result={qaResult} />
         </section>

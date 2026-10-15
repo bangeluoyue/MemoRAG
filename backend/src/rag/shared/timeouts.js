@@ -150,8 +150,17 @@ export async function invokeModelWithTimeout(runnable, input, {
 export function invokeAgentWithTimeout(graph, input, invocationConfig, {
   timeoutMs = DEFAULT_AGENT_TIMEOUT_MS,
 } = {}) {
-  return runWithTimeout(
+  return invokeRagWithTimeout(
     (signal) => graph.invoke(input, { ...invocationConfig, signal }),
+    { timeoutMs },
+  );
+}
+
+export function invokeRagWithTimeout(operation, {
+  timeoutMs = DEFAULT_AGENT_TIMEOUT_MS,
+} = {}) {
+  return runWithTimeout(
+    operation,
     {
       timeoutMs,
       fallbackTimeoutMs: DEFAULT_AGENT_TIMEOUT_MS,

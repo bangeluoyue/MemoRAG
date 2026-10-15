@@ -219,6 +219,7 @@ test("scenario A: dependent sub-question uses the rewritten query", async () => 
     decompose: 1,
     rewrite: 1,
     evaluate: 2,
+    decision: 0,
     generate: 1,
     citationCorrection: 0,
   });

@@ -3,9 +3,9 @@ import { getConfig } from "../../config.js";
 import { createLangSmithObservability } from "../../observability/langsmith.js";
 import {
   calculateAgenticRagRecursionLimit,
-  createAgenticRagGraph,
   createInitialState,
 } from "./agent-graph.js";
+import { createCoreAgenticRagGraph } from "./core-agent-graph.js";
 import { createMilvusClient, MilvusBookRetriever } from "./milvus-retriever.js";
 import { RerankingBookRetriever } from "./reranking-retriever.js";
 import { EbookRetriever } from "./ebook-retriever.js";
@@ -71,19 +71,16 @@ export function createEbookRag(options = {}) {
   const retriever = new EbookRetriever({ retriever: rankedRetriever });
   const webSearch = options.webSearch
     ?? (config.webSearch.enabled ? createBochaWebSearch(config.webSearch) : null);
-  const graph = createAgenticRagGraph({
+  const graph = createCoreAgenticRagGraph({
     model,
     retriever,
     bookName: config.rag.bookName,
     maxContextDocuments: config.rag.maxContextDocuments,
     maxSubQuestions: config.rag.maxSubQuestions,
-    maxPlanRepairAttempts: config.rag.maxPlanRepairAttempts,
-    maxSingleRetrievals: config.rag.maxSingleRetrievals,
-    maxGapRecoveryAttempts: config.rag.maxGapRecoveryAttempts,
     webSearch,
     maxWebSearches: config.webSearch.maxSearches,
     modelTimeoutMs: config.model.requestTimeoutMs ?? DEFAULT_LLM_TIMEOUT_MS,
-    diagnosticLogger: options.diagnosticLogger,
+    decisionTimeoutMs: config.rag.decisionTimeoutMs ?? 15000,
   });
 
   return {
@@ -144,7 +141,7 @@ export function createEbookRag(options = {}) {
 
 export {
   calculateAgenticRagRecursionLimit,
-  createAgenticRagGraph,
+  createCoreAgenticRagGraph,
   createInitialState,
   createLangSmithObservability,
   createMilvusClient,
@@ -153,3 +150,7 @@ export {
   MilvusBookRetriever,
   RerankingBookRetriever,
 };
+
+// Historical graph exports remain available for experiments and regression
+// tests, but createEbookRag() no longer selects that coverage-heavy path.
+export { createAgenticRagGraph } from "./agent-graph.js";

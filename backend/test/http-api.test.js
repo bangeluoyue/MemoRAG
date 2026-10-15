@@ -9,12 +9,19 @@ import {
 } from "../src/rag/shared/timeouts.js";
 
 function answer(label) {
+  const notes = label === "notes";
   return {
     answer: `${label} answer`,
     sources: [{ reference: "本地1", id: `${label}-source` }],
     webSources: [],
-    route: { strategy: "complex", mode: "single_retrieval", reason: "test" },
-    trace: { execution: { llmCallCount: 3, localRetrievalCount: 1 } },
+    route: {
+      strategy: notes ? "hybrid" : "complex",
+      mode: "single_retrieval",
+      reason: "test",
+    },
+    trace: {
+      execution: { llmCallCount: notes ? 1 : 3, localRetrievalCount: 1 },
+    },
   };
 }
 
@@ -68,7 +75,7 @@ function baseDependencies(overrides = {}) {
   };
 }
 
-test("HTTP API exposes health and isolated EPUB/notes Agent answers", async () => {
+test("HTTP API exposes health and isolated EPUB/notes RAG answers", async () => {
   const calls = [];
   await withApi(baseDependencies({
     ebookRag: {

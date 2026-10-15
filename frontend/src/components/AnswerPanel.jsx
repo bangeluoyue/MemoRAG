@@ -103,7 +103,7 @@ export function AnswerPanel({ result }) {
         </div>
         <p className="answer-copy">{result.answer || "没有生成回答。"}</p>
         {result.route?.reason && (
-          <p className="route-reason">路由判断：{result.route.reason}</p>
+          <p className="route-reason">执行策略：{result.route.reason}</p>
         )}
       </article>
 

@@ -1,21 +1,23 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v1.10（2026-10-15）
+> 版本：v1.11（2026-10-15）
 >
-> 状态：**P3-0～P3-4、P4-A、P4-B、P6-A、P6-B 与 P5-A 已完成；P5-B 超时分类及 evaluate 最小离线诊断完成。E1 已真实通过；E2 可确认在一次 `evaluate` 结构化模型调用的整体管线内达到应用 60 秒上限，但旧日志不足以继续区分传输、上游推理和结构化解析，也不能证明输入规模是根因。现已补充不含问题、Prompt 或正文的超时前诊断元数据，后端 138/138、前端 6/6 Mock 与前端生产构建通过；当前仍暂不适合部署，需经授权对 E2 做一次带新诊断的真实复验。**
+> 状态：**默认架构已精简为两个独立服务：EPUB 使用保留三态路由、受控拆题、多轮 Milvus 检索、轻量决策、可选 Bocha 和引用生成的核心 Agentic RAG；生活笔记使用 ES + Milvus + RRF + 可选 Rerank + 单次生成的 Hybrid RAG。复杂 coverage/evaluate/依赖改写 Graph 仅作为历史实现保留，不再进入默认问答。HTTP、React、EPUB 入库、笔记 CRUD 与双索引同步保持兼容。本版仅完成 Mock 与构建验收，精简后真实问答尚待单独授权。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
 ## 1. 产品目标与优先级
 
-建立一个以 **Agentic RAG 能力**为核心的智能问答系统，支持两类相互隔离的知识库：
+建立一个支持两类相互隔离知识库的可展示 AI 全栈 RAG 应用：
 
 1. **EPUB 电子书**：导入 EPUB、解析/分块/Embedding/向量入库、按 `bookId` 检索、回答与原文引用。
 2. **生活笔记**：笔记增删改查、原始笔记存储、同步建立 Elasticsearch 关键词索引与 Milvus 向量索引、问答与来源引用。
 
-共用能力包括：问题路由、多跳问题拆分、依赖型子问题改写、检索轮次限制、证据充分性评估、可选联网补充、引用溯源、Rerank、调用链追踪与测试。
+EPUB 保留必要的 Agentic 决策；生活笔记保持独立 Hybrid RAG。两者只共享配置、文档约定、引用、HTTP、超时和安全基础设施，不强制共用 Graph。
 
-**优先级：RAG 正确性与可验证性 > 数据入库可用性 > API/流式输出 > 简单 React 界面。** 不为堆技术而增加无用复杂度；前端只需演示核心能力。
+**优先级：稳定可演示 > 来源可追溯与范围隔离 > 数据链路可用 > 额外 Agent 优化。** 不再扩展 coverage 状态机、依赖改写、自动缺口恢复或新的 Agent 节点。
+
+> v1.10 及更早章节保留为历史设计和验收记录；涉及默认问答路径时，以本页第 3.1 节和“v1.11 精简重构”记录为准。
 
 ## 2. P3-0 核对范围与证据边界
 
@@ -39,24 +41,28 @@
 
 ```mermaid
 flowchart LR
-  CLI["src/cli/chat.js"] --> API["createEbookRag().ask()"]
-  CFG["src/config.js"] --> API
-  API --> GRAPH["EPUB LangGraph"]
-  GRAPH --> ROUTE["route / decompose / rewrite"]
-  ROUTE --> RETRIEVE["MilvusBookRetriever.search(currentQuery)"]
-  RETRIEVE --> EMB["OpenAIEmbeddings"]
-  RETRIEVE --> MV["Milvus: book_id filter"]
-  RETRIEVE --> MERGE["按 id 去重、score 排序、裁剪"]
-  MERGE --> CTX["buildLocalContext: [本地N]"]
-  CTX --> EVAL["evaluate"]
-  EVAL -->|可选| WEB["Bocha Web Search"]
-  EVAL --> GEN["generate"]
-  GEN --> OUT["answer + documents + webSources + trace"]
-  OUT --> MAP["index.js 再生成 sources.reference"]
-  MAP --> CLI
+  HTTP["Node HTTP API"] --> EBOOK["EbookRag"]
+  HTTP --> NOTES["NotesRag"]
+
+  EBOOK --> ROUTE["direct / single_retrieval / multi_hop"]
+  ROUTE -->|复杂问题| DECOMP["受控拆题"]
+  ROUTE -->|需要书中证据| MV["Milvus + bookId"]
+  DECOMP --> MV
+  MV --> DECIDE["轻量决策"]
+  DECIDE -->|仍有计划与预算| MV
+  DECIDE -->|本地不足且已启用| WEB["Bocha"]
+  DECIDE --> EGEN["证据约束生成 + 引用校验"]
+  WEB --> EGEN
+
+  NOTES --> ES["ES + userId/knowledgeBase"]
+  NOTES --> NMV["Milvus + userId/knowledgeBase"]
+  ES --> RRF["note_id 去重 + RRF"]
+  NMV --> RRF
+  RRF --> RR["可选 Qwen Rerank"]
+  RR --> NGEN["一次证据约束生成"]
 ```
 
-`createEbookRag()` 通过依赖注入允许 Mock `model`、`retriever` 和 `webSearch`；这也是当前测试不访问真实服务的基础。
+`createEbookRag()` 和 `createNotesRag()` 均支持依赖注入；Mock 测试不会访问真实模型、数据库、搜索、Rerank 或追踪服务。
 
 ### 3.2 旧 Demo（未接入当前主线）
 
@@ -77,16 +83,16 @@ flowchart LR
 | 能力 | 代码证据 | P3-0 结论 |
 | --- | --- | --- |
 | `createEbookRag().ask(question, options)` | `src/rag/ebook/index.js` | **已实现**；返回 `answer`、`route`、`sources`、`webSources`、`trace`。 |
-| simple/complex 路由与 simple 直答 | `agent-graph.js` 的 `routeQuestion` / `directAnswer` | **已实现并有 Mock 测试**；simple 分支不检索。 |
-| 问题拆分 | `decomposeQuestion` | **已实现并有 Mock 覆盖**。 |
-| 依赖型子问题改写 | `rewriteSubQuestion`、`validateRewrite` | **已实现并有 Mock 覆盖**；会检查支持文档、实体落地、冲突及模型异常回退。历史真实运行尚未证明进入 `rewritten` 分支。 |
+| 三态路由与 direct 直答 | `core-agent-graph.js`、`nodes/route.js` | **默认启用并有 Mock 测试**；direct 分支不检索。 |
+| 复杂问题拆分 | `nodes/core-decompose.js` | **默认启用并有 Mock 覆盖**；单次调用、无计划修复重试，依赖实体未确认时回退原始完整问题。 |
+| 历史依赖改写与 coverage | `agent-graph.js`、`nodes/rewrite.js`、`nodes/evaluate.js` | **保留但不在默认入口执行**。 |
 | 改写查询进入实际检索 | `retrieveNode` 使用 `state.currentQuery` | **已实现并有 Mock 覆盖**。 |
 | EPUB Milvus 只读检索 | `milvus-retriever.js` | **代码已实现**；Embedding 维度校验、`book_id` 过滤、COSINE、`nprobe` 和字段映射有 Mock 测试。本轮未连真实 Milvus。 |
 | 多轮检索、去重、裁剪 | `mergeUniqueDocuments` | **已实现并有 Mock 覆盖**；同 ID 保留较高 Milvus `score`，再排序并限制数量。 |
-| 检索/联网次数上限 | `evaluateNode` | **已实现并有 Mock 覆盖**。 |
-| Bocha 可选联网 | `config.js`、`web-search.js` | **部分实现**；无 Key 或开关关闭时禁用，次数限制有效；但请求失败会直接抛错，当前没有运行时降级。旧规格中的“Bocha 降级已实现”不成立。 |
+| 检索/联网次数上限 | `core-agent-graph.js`、`core-decision.js` | **已实现并有 Mock 覆盖**；模型建议不能突破代码预算。 |
+| Bocha 可选联网 | `config.js`、`web-search.js` | **默认关闭**；显式启用后受次数限制，请求失败安全进入保守生成。 |
 | 回答、本地来源、网页来源、执行 trace | `generateNode`、`index.js` | **已实现基础结构**；P3-1 已修复本地引用快照与编号合法性，多轮网页编号仍是已知限制，见第 6 节。 |
-| Qwen Rerank | 仅 `legacy/hybrid/dashscope-rerank.mjs` | **未接入主线**。 |
+| Qwen Rerank | `shared/dashscope-reranker.js`、两类 Reranking Retriever | **已接入且默认关闭**；生活笔记失败可明确回退 RRF。 |
 | EPUB 的 ES 混合检索 | 无代码、无索引定义 | **不存在**，本阶段也不设计为 EPUB 能力。 |
 | 生活笔记 ES + Milvus 检索 | `src/rag/notes/`、`src/rag/retrieval/` | **P3-4 已产品化并在 P4-B 本机联调中验收**；双源召回、RRF、租户隔离与统一 ID 已跑通，生产环境及真实 Rerank 质量仍未验收。 |
 | 生活笔记 CRUD / 原始存储 / 双写 | `src/notes/`、`src/cli/notes.js`、`sql/001_create_life_notes.sql` | **P4-B 已完成 Mock 实现**；PostgreSQL 真相源、稳定 ID、ES/Milvus 同步、墓碑删除与显式重试已覆盖，真实写入未授权验收。 |
@@ -1003,6 +1009,20 @@ E2 与先前约 10.5 秒的 `sdk_or_upstream` 超时不同：本次是 MemoRAG �
 **修改与测试**：更新 `backend/src/rag/shared/timeouts.js`、EPUB evaluate 节点及其依赖装配、`backend/src/http/app.js`、`backend/src/http/server.js`、两份 Mock 测试和本 SDD。新增 evaluate 挂起 Mock，验证调用前日志、超时错误元数据与敏感正文不泄漏；HTTP Mock 验证只记录白名单且公开 504 不变。最终后端 14 个测试文件、138/138 Mock（含嵌套子测试）通过；前端 2 个测试文件、6/6 通过；Vite 生产构建成功。
 
 **待真实验证与部署门槛**：若要决定是否进入部署，仍有必要在用户再次明确授权后仅复验一次 E2，不自动重试，并保存新元数据。若仍超时，先用该次 `evaluationDocumentCount/inputCharacterCount` 与 E1 对照，再决定是否需要一个独立的最小修复；在取得证据前不调整 Prompt、模型或预算。E2 稳定完成且回答/引用得到原文支持、E3/N1 的既定验收状态得到明确处置之前，项目仍不满足现场演示的稳定性门槛。任何对外部署还必须用可信身份层绑定 `userId`；当前请求参数隔离不能替代认证。
+
+#### 默认 RAG 架构精简（v1.11）
+
+**完成范围**：默认 EPUB 问答切换到 `core-agent-graph.js`，保留 `direct / single_retrieval / multi_hop` 路由、一次受控拆题、多轮 Milvus 检索、可选 Bocha 和最终引用生成。原 coverage/evaluate、依赖改写、计划修复与缺口恢复 Graph 保留在 `agent-graph.js` 作为历史实现，但 `createEbookRag()` 不再选择它。EPUB 没有新增 ES 索引。
+
+**轻量决策**：每轮检索后只判断 `retrieve / web_search / generate`，输入最多 4 条、每条 350 字符的本地摘要。调用上限由检索轮次硬预算决定，单次等待受 `DECISION_TIMEOUT_MS=15000` 控制且不自动重试；模型建议不能突破本地或联网预算。决策超时/异常时优先执行剩余计划内查询；没有剩余查询时，仅在本地零文档且联网可用的情况下联网，否则使用现有资料保守生成。15 秒仅用于控制等待，不能证明或修复模型端点问题。
+
+**依赖安全边界**：拆题只调用一次。包含 `dependsOn`、内部占位符，或在原问题存在未解析指代时由模型自行补出的后续实体查询，均不会直接进入 Retriever，而会回退到不含内部占位符的原始完整问题。该策略避免凭模型记忆补全依赖实体，但也意味着复杂指代问题的检索精度需真实验收。
+
+**生活笔记独立化**：`createNotesRag()` 不再创建 EPUB Graph、Bocha 或拆题节点。一次问答固定执行 ES 与 Milvus 并行召回、稳定 `note_id` 去重、RRF、可选 Qwen Rerank 和一次生成；空召回不调用生成模型。Rerank 实际 `disabled/success/fallback` 状态同时写入 `route.reason` 与安全 trace。PostgreSQL CRUD、墓碑删除、双索引同步及 retry 未改动。
+
+**兼容性与测试**：HTTP 和 React 继续使用 `answer/sources/webSources/route/trace`；`bookId`、`userId + knowledgeBase`、引用快照和超时错误保持兼容。Mock 明确覆盖 EPUB 三态路由、拆题、多轮检索、依赖实体回退、决策超时、预算终止、Bocha 成功/失败、Rerank 与引用校验，以及 Notes 双源各一次召回、RRF、Rerank 成功/回退、一次生成、空召回和租户隔离。后端 14 个测试文件、141/141（含嵌套子测试）通过；前端 2 个测试文件、6/6 通过；Vite 生产构建成功。
+
+**验收边界**：本轮没有连接或修改 PostgreSQL、ES、Milvus，没有触碰 `ebook_collection` 的既有数据，也没有调用真实 LLM、Embedding、Rerank、Bocha 或 LangSmith。精简后的 EPUB 单跳/多跳/联网、生活笔记 Hybrid 问答和 Rerank 质量仍需用户另行授权最少量真实验收；在此之前不宣称已达到公网部署标准。
 
 ### 后续阶段（本阶段不实施）
 
