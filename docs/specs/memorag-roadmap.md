@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v1.16（2026-10-15）
+> 版本：v1.17（2026-10-15）
 >
-> 状态：**两个独立 RAG 服务及核心问答逻辑保持不变；登录、上传、动态书籍列表和 LangSmith Trace 已完成真实验收。最小 OpenEvals 三指标评估入口已完成 dry-run/Mock，等待用户提供一条含实际 answer 与 sources 的 EPUB 样本后显式运行真实 Judge。**
+> 状态：**两个独立 RAG 服务及核心问答逻辑保持不变；登录、上传、动态书籍列表、LangSmith Trace 和最小 OpenEvals 三指标评估均已完成真实验收。当前冻结已验收功能，下一步只制定最小安全部署方案。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -1075,9 +1075,29 @@ E2 与先前约 10.5 秒的 `sdk_or_upstream` 超时不同：本次是 MemoRAG �
 
 **数据与执行边界**：Dataset 样本必须来自一条已完成的公开 EPUB 问答，保存 MemoRAG 实际 answer、按顺序的本地引用、真实文档 ID 和原文。校验拒绝空来源、重复 ID、跨 bookId、引用乱序/越界及 Notes 数据；实际 answer 被标为 `recorded_answer`，不伪装成参考答案。Experiment 只回放这条已记录结果，不调用 RAG、Embedding、Retriever 或数据库。CLI 默认 dry-run，只有显式 `--execute` 才创建/复用 Dataset 并运行固定 3 次 Judge；本地样本与结果目录均被 Git 忽略。
 
-**当前样本状态**：仓库与已有 metadata-only trace 没有保存《阿Q正传》问答的完整 answer 和 sources，因此未提交、未编造真实样本，也没有上传 Dataset 或产生评分。用户需从一次真实 HTTP 响应保存 `answer`、`sources[].id/reference/bookId/bookName/chapterNum/chunkIndex/content`、捕获时间及可选 trace ID，再执行显式命令。
+**v1.16 交付时的样本状态**：仓库与已有 metadata-only trace 没有保存《阿Q正传》问答的完整 answer 和 sources，因此当时未提交、未编造真实样本，也没有上传 Dataset 或产生评分。用户需从一次真实 HTTP 响应保存 `answer`、`sources[].id/reference/bookId/bookName/chapterNum/chunkIndex/content`、捕获时间及可选 trace ID，再执行显式命令。
 
 **验证结果**：后端官方 `npm test` 的 17/17 测试文件通过，无文件隔离复核为 160 个顶层测试、165 个含嵌套测试，0 失败。新增 Mock 覆盖样本/引用校验、默认零外部调用、三个标准 Prompt 的字段适配与共享 Judge、单 Example 限制、固定三次 Judge、串行/单次设置、LangSmith 链接和本地结果落盘。两个真实 CLI dry-run 均确认 Judge/RAG/Embedding 调用为 0。本轮未访问 LangSmith、未调用真实 Judge/RAG/Embedding，也未修改数据库、Graph、Retriever、Prompt、HTTP 或 React。
+
+#### LangSmith Trace 与三指标评估真实验收（v1.17）
+
+**Tracing 真实验收**：EPUB 问答已在 LangSmith 云端真实运行成功，现有集成能够观察 `routeQuestion`、`retrieve`、`decision`、`generate` 等主要阶段及其耗时、模型和检索调用信息。业务 Trace 继续默认关闭并采用 `metadata_only` 隐私策略；生活笔记私人数据仍默认不进入 LangSmith。本阶段没有为改善 Trace 展示而修改 RAG Graph。
+
+**评估兼容修复**：真实调试确认两个独立问题。第一，当前 `qwen-plus` 评估端点与 OpenEvals 默认使用的 JSON Schema 结构化输出不兼容，因此只对评估 Judge 显式改用 Function Calling；主业务 RAG 模型配置不变。第二，当前 `langsmith@0.10.11` 的 `evaluate()` 在返回前已经处理并保存结果，再次异步迭代会因 `processedCount` 已推进而得到空行；评估脚本因此优先读取 `experiment.results`，仅为旧 SDK 保留异步迭代回退。脚本同时支持 `--metric` 单指标执行，验证 OpenEvals `key/score`、`row.evaluationResults.results` 和 Feedback 写入；缺失或无效指标会以非零状态退出。阶段诊断只记录布尔值、数量、字段名和安全错误类别，不记录问题、答案、上下文、Prompt、密钥、URL 或响应正文。默认 dry-run 仍不访问外部服务。
+
+**三指标真实验收（用户于 2026-10-15 提供的终端结果）**：使用《阿Q正传》真实 EPUB 问答样本 `aq-son-001`，问题为“阿Q为什么认为自己被儿子打了？”，实际回答携带 8 条真实检索来源；Judge 为 `qwen-plus`，Dataset 为 `memorag-epub-eval-v1`，Experiment 为 `memorag-openevals-90bf7d44`。Judge 成功返回 3 次，OpenEvals 返回 3 个有效评分，LangSmith Feedback 写入成功 3/3、失败 0 次，并从 `experiment.results` 读取到 1 行、3 个评分；整个评估只回放已记录答案和来源，没有重新执行 RAG 或 Embedding。
+
+| 指标 | 真实评分 |
+| --- | ---: |
+| `rag_groundedness` | 1.0 |
+| `rag_helpfulness` | 1.0 |
+| `rag_retrieval_relevance` | 1.0 |
+
+Experiment：[memorag-openevals-90bf7d44](https://smith.langchain.com/o/c8262b30-7ee2-4406-9096-103bd33e5fe6/datasets/e9830ad0-fc8d-47d4-8070-667a62d0ae16/compare?selectedSessions=8dd72de4-c40e-475b-b7e3-122e8015949a)
+
+**回归与边界**：本轮离线复核中，后端官方测试 17/17 文件通过，评估专项 10/10 通过；前端 2/2 文件、10/10 测试通过，Vite 生产构建成功（23 个模块）。测试显式关闭 LangSmith/LangChain 新旧追踪开关、联网和 Rerank，没有执行 `--execute`，没有访问真实模型、LangSmith、Milvus、Elasticsearch 或数据库。上述三个 1.0 只代表一个公开文学问答样本，不能推导整个 RAG 系统达到 100% 准确率；Retrieval Relevance Judge 的解释显示 8 条来源中只有部分直接相关，仍有召回精度优化空间，本阶段不继续调整 Retriever、Prompt 或 Graph。
+
+**实际修改文件**：`backend/legacy/eval/evaluators.mjs`、`backend/legacy/eval/run_eval.mjs`、`backend/test/evaluation.test.js` 和本 SDD。真实样本 `backend/legacy/eval/local/` 与本地结果 `backend/legacy/eval/results/` 继续由 Git 忽略，不纳入版本库。
 
 ### 后续阶段（本阶段不实施）
 
@@ -1101,7 +1121,7 @@ P3-0 已完成以下设计决策：
 - `[本地15]` 的首要缺口是生成后没有引用合法性校验，而不是 CLI 截断；P3-1 已用 Mock 复现并完成本地引用修复。
 - P3-1 已建立本地引用快照；原计划中的多轮 `[网页N]` 编号重置问题尚未完成，继续作为已知限制保留。
 - 旧 Qwen Rerank 的 HTTP 形状可迁移，但实现本身不能直接复用；P3-2 默认关闭、专用 Key 优先、失败默认回退，并以 rank fusion 防止重排结果被向量分数覆盖。
-- 当前 LangSmith 新旧 env 命名兼容；P3-3 已完成显式配置、默认关闭、默认 `metadata_only`、测试隔离和生活笔记默认阻断。真实 LangSmith 云端 trace 仍待授权验收。
+- 当前 LangSmith 新旧 env 命名兼容；P3-3 已完成显式配置、默认关闭、默认 `metadata_only`、测试隔离和生活笔记默认阻断。EPUB 云端 Trace 与最小 OpenEvals 三指标已于 v1.17 完成真实验收；评估仅覆盖一个公开文学问答样本，不能替代更广泛的质量评测。
 - P3-4 初始只交付只读适配层和 Mock 验收；P4-B 后续已在本机重建契约一致的生活笔记 ES/Milvus Schema，并真实验证 RRF 双源召回、稳定 ID 和严格双端租户过滤。生产环境与真实 Rerank 质量仍未验收。
 
-P3-1～P3-4 完成状态与限制见第 9 节；P4-A/P4-B、P6-A/P6-B 完成状态与真实验收边界见第 10 节。P4-A 已完成默认 dry-run 的 EPUB 入库 CLI/服务层、稳定 ID、重复/冲突/恢复策略、Schema 校验与 Mock 回归；P4-B 已完成 PostgreSQL 真相源、稳定笔记 ID、ES/Milvus 双索引同步、墓碑删除和显式重试，并通过本机真实 CRUD/混合检索验收；P6-A/P6-B 已提供 Node HTTP API 与 React 双知识库演示界面，并完成本机最小单跳浏览器端到端验收。生产环境、复杂问答延迟与 coverage、真实部分故障恢复、EPUB 入库、LangSmith 云端显示以及 P3-2.2 全面答案忠实度仍待后续授权验收。
+P3-1～P3-4 完成状态与限制见第 9 节；P4-A/P4-B、P6-A/P6-B 完成状态与真实验收边界见第 10 节。P4-A 已完成默认 dry-run 的 EPUB 入库 CLI/服务层、稳定 ID、重复/冲突/恢复策略、Schema 校验与 Mock 回归；P4-B 已完成 PostgreSQL 真相源、稳定笔记 ID、ES/Milvus 双索引同步、墓碑删除和显式重试，并通过本机真实 CRUD/混合检索验收；P6-A/P6-B 已提供 Node HTTP API 与 React 双知识库演示界面，并完成本机最小单跳浏览器端到端验收；LangSmith Trace 与单样本三指标评估也已真实通过。当前仍待部署阶段处理云环境配置、TLS/反向代理、秘密管理与运行时健康检查；真实部分故障恢复、复杂问题质量和更大评估集属于已知限制，不阻碍冻结当前演示功能，但不得宣称达到生产级可靠性。
