@@ -120,6 +120,7 @@ function baseDependencies(overrides = {}) {
       publicUser(user) { return { email: user.email, role: user.role }; },
     },
     ebookLibrary: {
+      async listBooks() { return [{ bookId: "book-1", bookName: "测试书" }]; },
       async getBookMetadata(bookId) { return { bookId, bookName: "测试书" }; },
       async upload() {
         return { status: "inserted", bookId: "epub-hash", bookName: "上传书籍" };
@@ -152,6 +153,10 @@ test("HTTP auth login, session restore, logout, and protected-route checks are e
     });
     assert.equal(unauthenticated.status, 401);
     assert.equal((await unauthenticated.json()).error.code, "AUTH_REQUIRED");
+
+    const unauthenticatedBooks = await requestApi("/api/ebooks", { cookie: "" });
+    assert.equal(unauthenticatedBooks.status, 401);
+    assert.equal((await unauthenticatedBooks.json()).error.code, "AUTH_REQUIRED");
 
     const badLogin = await requestApi("/api/auth/login", {
       method: "POST",
@@ -225,6 +230,12 @@ test("HTTP reads book names and restricts EPUB upload to administrators", async 
   const uploads = [];
   await withApi(baseDependencies({
     ebookLibrary: {
+      async listBooks() {
+        return [
+          { bookId: "book-1", bookName: "Milvus 书名" },
+          { bookId: "epub-hash", bookName: "上传书籍" },
+        ];
+      },
       async getBookMetadata(bookId) {
         return bookId === "book-1" ? { bookId, bookName: "Milvus 书名" } : null;
       },
@@ -234,6 +245,15 @@ test("HTTP reads book names and restricts EPUB upload to administrators", async 
       },
     },
   }), async (requestApi) => {
+    const list = await requestApi("/api/ebooks", {
+      cookie: "memorag_session=tester",
+    });
+    assert.deepEqual(await list.json(), {
+      books: [
+        { bookId: "book-1", bookName: "Milvus 书名" },
+        { bookId: "epub-hash", bookName: "上传书籍" },
+      ],
+    });
     const metadata = await requestApi("/api/ebooks/book-1");
     assert.deepEqual(await metadata.json(), {
       book: { bookId: "book-1", bookName: "Milvus 书名" },

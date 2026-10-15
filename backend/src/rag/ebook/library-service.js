@@ -8,6 +8,7 @@ import { EpubInputError } from "./ingestion/epub-loader.js";
 import { createMilvusClient } from "./milvus-retriever.js";
 
 const SAFE_BOOK_ID = /^[\w.:-]+$/u;
+const BOOK_LIST_BATCH_SIZE = 1000;
 const ALLOWED_MIME_TYPES = new Set([
   "",
   "application/epub+zip",
@@ -71,6 +72,44 @@ export function createEbookLibrary(options = {}) {
   const maxBytes = Number(options.maxBytes ?? config.uploads?.epubMaxBytes ?? 25 * 1024 * 1024);
 
   return {
+    async listBooks() {
+      const books = new Map();
+      try {
+        const iterator = await client.queryIterator({
+          collection_name: config.milvus.collectionName,
+          filter: 'book_id != ""',
+          output_fields: ["id", "book_id", "book_name"],
+          batchSize: BOOK_LIST_BATCH_SIZE,
+          consistency_level: ConsistencyLevelEnum.Strong,
+        });
+        for await (const batch of iterator) {
+          for (const row of batch ?? []) {
+            const bookId = String(row?.book_id ?? "").trim();
+            const bookName = String(row?.book_name ?? "").trim();
+            if (!bookId || !bookName) continue;
+            const existing = books.get(bookId);
+            if (existing && existing.bookName !== bookName) {
+              throw new EbookLibraryError(
+                "BOOK_METADATA_INVALID",
+                "同一 bookId 存在不一致的书籍名称",
+              );
+            }
+            books.set(bookId, { bookId, bookName });
+          }
+        }
+      } catch (error) {
+        if (error instanceof EbookLibraryError) throw error;
+        throw new EbookLibraryError(
+          "BOOK_LIST_READ_FAILED",
+          "无法读取 EPUB 书籍列表",
+          { cause: error },
+        );
+      }
+      return [...books.values()].sort((left, right) => (
+        left.bookId.localeCompare(right.bookId, "zh-CN", { numeric: true })
+      ));
+    },
+
     async getBookMetadata(value) {
       const { bookId, literal } = bookIdLiteral(value);
       const response = await client.query({

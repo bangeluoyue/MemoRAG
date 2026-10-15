@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { AnswerPanel } from "./AnswerPanel.jsx";
 
@@ -8,6 +8,9 @@ export function EbookQa({ currentUser }) {
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  const [books, setBooks] = useState([]);
+  const [bookListStatus, setBookListStatus] = useState("loading");
+  const [bookListError, setBookListError] = useState("");
   const [bookStatus, setBookStatus] = useState("loading");
   const [book, setBook] = useState(null);
   const [bookError, setBookError] = useState("");
@@ -15,6 +18,39 @@ export function EbookQa({ currentUser }) {
   const [uploadStatus, setUploadStatus] = useState("idle");
   const [uploadMessage, setUploadMessage] = useState("");
   const controllerRef = useRef(null);
+
+  const loadBooks = useCallback(async ({ signal, preferredBook } = {}) => {
+    setBookListStatus("loading");
+    setBookListError("");
+    try {
+      const result = await api.listEbooks({ signal });
+      const nextBooks = Array.isArray(result.books)
+        ? result.books.filter((item) => item?.bookId && item?.bookName)
+        : [];
+      if (preferredBook?.bookId
+        && !nextBooks.some((item) => item.bookId === preferredBook.bookId)) {
+        nextBooks.push(preferredBook);
+      }
+      setBooks(nextBooks);
+      setBookListStatus("success");
+      setBookId((current) => {
+        if (preferredBook?.bookId) return preferredBook.bookId;
+        if (nextBooks.some((item) => item.bookId === current)) return current;
+        return nextBooks[0]?.bookId ?? current;
+      });
+    } catch (requestError) {
+      if (requestError?.name === "AbortError") return;
+      setBooks([]);
+      setBookListStatus("error");
+      setBookListError(requestError.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadBooks({ signal: controller.signal });
+    return () => controller.abort();
+  }, [loadBooks]);
 
   useEffect(() => {
     const normalizedBookId = bookId.trim();
@@ -24,6 +60,14 @@ export function EbookQa({ currentUser }) {
       setBookError("");
       return undefined;
     }
+    const listedBook = books.find((item) => item.bookId === normalizedBookId);
+    if (listedBook) {
+      setBook(listedBook);
+      setBookStatus("success");
+      setBookError("");
+      return undefined;
+    }
+    if (bookListStatus === "loading") return undefined;
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       setBookStatus("loading");
@@ -43,7 +87,7 @@ export function EbookQa({ currentUser }) {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [bookId]);
+  }, [bookId, bookListStatus, books]);
 
   async function upload(event) {
     event.preventDefault();
@@ -60,7 +104,9 @@ export function EbookQa({ currentUser }) {
       setUploadMessage(`入库完成：${result.book.bookName}（${result.book.bookId}）`);
       setBookId(result.book.bookId);
       setBook({ bookId: result.book.bookId, bookName: result.book.bookName });
+      setBookStatus("success");
       setUploadFile(null);
+      await loadBooks({ preferredBook: result.book });
     } catch (requestError) {
       setUploadStatus("error");
       setUploadMessage(requestError.message);
@@ -72,7 +118,7 @@ export function EbookQa({ currentUser }) {
     const normalizedBookId = bookId.trim();
     const normalizedQuestion = question.trim();
     if (!normalizedBookId || !normalizedQuestion) {
-      setError("请填写 bookId 和问题。");
+      setError("请选择书籍并填写问题。");
       return;
     }
 
@@ -111,20 +157,43 @@ export function EbookQa({ currentUser }) {
 
         <form className="question-card" onSubmit={submit}>
           <div className="field-group compact-field">
-            <label htmlFor="book-id">当前书籍 ID</label>
-            <input
-              id="book-id"
-              list="known-book-ids"
-              value={bookId}
-              onChange={(event) => setBookId(event.target.value)}
-              placeholder="例如：1"
-              autoComplete="off"
-            />
-            <datalist id="known-book-ids">
-              <option value="1" />
-              <option value="demo-book" />
-            </datalist>
-            <small>输入已经存在的 bookId，右侧会从 Milvus 查询书名。</small>
+            <label htmlFor={bookListStatus === "loading" || books.length ? "book-select" : "book-id"}>选择电子书</label>
+            {bookListStatus === "loading" && (
+              <select id="book-select" aria-label="选择电子书" disabled value="">
+                <option value="">正在加载书籍…</option>
+              </select>
+            )}
+            {bookListStatus === "success" && books.length > 0 && (
+              <select
+                id="book-select"
+                aria-label="选择电子书"
+                value={bookId}
+                onChange={(event) => setBookId(event.target.value)}
+              >
+                {books.map((item) => (
+                  <option key={item.bookId} value={item.bookId}>{item.bookName}</option>
+                ))}
+              </select>
+            )}
+            {bookListStatus !== "loading" && books.length === 0 && (
+              <input
+                id="book-id"
+                aria-label="手动输入 bookId"
+                value={bookId}
+                onChange={(event) => setBookId(event.target.value)}
+                placeholder="手动输入 bookId，例如：1"
+                autoComplete="off"
+              />
+            )}
+            {bookListStatus === "success" && books.length > 0 && (
+              <small>列表来自当前 Milvus EPUB Collection。</small>
+            )}
+            {bookListStatus === "success" && books.length === 0 && (
+              <small>当前没有可选择的书籍，可手动输入已有 bookId。</small>
+            )}
+            {bookListStatus === "error" && (
+              <small className="inline-error">书籍列表加载失败：{bookListError}。可手动输入 bookId。</small>
+            )}
           </div>
           <div className="field-group">
             <label htmlFor="ebook-question">你想从书中了解什么？</label>

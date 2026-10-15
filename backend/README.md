@@ -139,6 +139,7 @@ EPUB 入库的 Embedding 批次默认且最多为 10 条，与 `text-embedding-v
 | `GET` | `/api/auth/me` | 恢复当前会话 |
 | `POST` | `/api/auth/logout` | 删除当前会话并清除 Cookie |
 | `PATCH` | `/api/admin/tester-password` | 管理员修改测试员密码 |
+| `GET` | `/api/ebooks` | 从 Milvus 分页读取并按 `book_id` 去重的书籍列表 |
 | `GET` | `/api/ebooks/:bookId` | 从 Milvus 精确查询书名 |
 | `POST` | `/api/ebooks/upload` | 管理员上传并入库 EPUB |
 | `POST` | `/api/qa/ebook` | EPUB 问答，需 `question/bookId` |
@@ -152,7 +153,7 @@ EPUB 入库的 Embedding 批次默认且最多为 10 条，与 `text-embedding-v
 
 模型超时返回安全的 `MODEL_TIMEOUT`/HTTP 504，并保留 `stage` 与 `timeoutSource`；其他认证、限流和连接错误不会被误判为模型超时。API 不返回密钥、连接字符串、完整 Prompt 或上游原始异常。
 
-除 `/health` 和登录所需接口外，业务接口均校验服务端会话。上传只接受 multipart 中的 `.epub` 文件，限制大小并校验 ZIP 特征；服务按文件 SHA-256 摘要生成稳定 `bookId`，调用现有 `resume` 入库策略，仅向现有兼容 Collection 追加缺失分块，不提供删除、重建、覆盖或服务器路径参数。
+除 `/health` 和登录所需接口外，业务接口均校验服务端会话。书籍列表通过 Milvus query iterator 仅读取主键、`book_id` 和 `book_name`，不读取向量或正文。上传只接受 multipart 中的 `.epub` 文件，限制大小并校验 ZIP 特征；服务按文件 SHA-256 摘要生成稳定 `bookId`，调用现有 `resume` 入库策略，仅向现有兼容 Collection 追加缺失分块，不提供删除、重建、覆盖或服务器路径参数。
 
 ## 验收边界
 

@@ -40,6 +40,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -366,6 +367,7 @@ a {
 }
 
 .field-group input,
+.field-group select,
 .field-group textarea {
   width: 100%;
   border: 1px solid #d8e0da;
@@ -376,7 +378,8 @@ a {
   transition: 150ms ease;
 }
 
-.field-group input {
+.field-group input,
+.field-group select {
   height: 44px;
   padding: 0 13px;
 }
@@ -389,6 +392,7 @@ a {
 }
 
 .field-group input:focus,
+.field-group select:focus,
 .field-group textarea:focus {
   border-color: var(--accent);
   background: white;

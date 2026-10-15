@@ -64,6 +64,7 @@ test("unauthenticated users see login errors, can sign in, restore the workspace
       return response({ user: { email: "test@123.com", role: "tester" } });
     }
     if (path === "/api/auth/logout") return response({ loggedOut: true });
+    if (path === "/api/ebooks") return response({ books: [] });
     if (path === "/api/ebooks/1") {
       return response({ error: { code: "BOOK_NOT_FOUND", message: "未找到对应书籍" } }, { ok: false, status: 404 });
     }
@@ -88,21 +89,27 @@ test("unauthenticated users see login errors, can sign in, restore the workspace
 
 test("administrator can reset the tester password and upload an EPUB", async () => {
   const user = userEvent.setup();
+  let bookListCount = 0;
   const fetchMock = vi.fn(async (path, options = {}) => {
     if (path === "/api/auth/me") {
       return response({ user: { email: "18296262260@163.com", role: "admin" } });
     }
-    if (path === "/api/ebooks/1") {
-      return response({ book: { bookId: "1", bookName: "天龙八部" } });
+    if (path === "/api/ebooks") {
+      bookListCount += 1;
+      return response({
+        books: bookListCount > 1
+          ? [
+            { bookId: "1", bookName: "天龙八部" },
+            { bookId: "epub-hash", bookName: "上传书籍" },
+          ]
+          : [{ bookId: "1", bookName: "天龙八部" }],
+      });
     }
     if (path === "/api/admin/tester-password" && options.method === "PATCH") {
       return response({ user: { email: "test@123.com", role: "tester" } });
     }
     if (path === "/api/ebooks/upload" && options.method === "POST") {
       return response({ book: { bookId: "epub-hash", bookName: "上传书籍", status: "inserted" } }, { status: 201 });
-    }
-    if (path === "/api/ebooks/epub-hash") {
-      return response({ book: { bookId: "epub-hash", bookName: "上传书籍" } });
     }
     throw new Error(`unexpected request: ${options.method || "GET"} ${path}`);
   });
@@ -116,13 +123,15 @@ test("administrator can reset the tester password and upload an EPUB", async () 
   expect(await screen.findByText(/测试员密码已更新/u)).toBeTruthy();
 
   await user.click(screen.getByRole("button", { name: /电子书问答/u }));
+  const bookListCountBeforeUpload = bookListCount;
   const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], "demo.epub", {
     type: "application/epub+zip",
   });
   await user.upload(await screen.findByLabelText("选择 EPUB 文件"), file);
   await user.click(screen.getByRole("button", { name: "上传并入库" }));
   expect(await screen.findByText(/入库完成：上传书籍/u)).toBeTruthy();
-  expect(screen.getByDisplayValue("epub-hash")).toBeTruthy();
+  expect(screen.getByLabelText("选择电子书").value).toBe("epub-hash");
+  expect(bookListCount).toBe(bookListCountBeforeUpload + 1);
 });
 
 test("electronic-book QA shows processing, execution metrics, and expandable source text", async () => {
@@ -132,8 +141,11 @@ test("electronic-book QA shows processing, execution metrics, and expandable sou
     if (path === "/api/auth/me") {
       return Promise.resolve(response({ user: { email: "test@123.com", role: "tester" } }));
     }
-    if (path === "/api/ebooks/1") {
-      return Promise.resolve(response({ book: { bookId: "1", bookName: "演示书籍" } }));
+    if (path === "/api/ebooks") {
+      return Promise.resolve(response({ books: [
+        { bookId: "1", bookName: "演示书籍" },
+        { bookId: "epub-hash", bookName: "第二本书" },
+      ] }));
     }
     if (path === "/api/qa/ebook") {
       return new Promise((resolve) => { resolveQa = resolve; });
@@ -144,6 +156,9 @@ test("electronic-book QA shows processing, execution metrics, and expandable sou
   render(<App />);
 
   expect(screen.queryByRole("button", { name: /上传/u })).toBeNull();
+  await screen.findByRole("option", { name: "第二本书" });
+  await user.selectOptions(screen.getByLabelText("选择电子书"), "epub-hash");
+  expect(screen.getByText("epub-hash")).toBeTruthy();
   await user.type(await screen.findByLabelText("你想从书中了解什么？"), "人物为什么这样做？");
   await user.click(screen.getByRole("button", { name: "发送问题" }));
   expect(screen.getByText("Agent 正在处理")).toBeTruthy();
@@ -153,12 +168,37 @@ test("electronic-book QA shows processing, execution metrics, and expandable sou
   });
   expect(await screen.findByText(/为了保护朋友/u)).toBeTruthy();
   expect(screen.getByText("3")).toBeTruthy();
-  const details = screen.getByText("演示书籍").closest("details");
+  const sourceTitle = screen.getAllByText("演示书籍")
+    .find((element) => element.closest("details"));
+  const details = sourceTitle.closest("details");
   expect(details.open).toBe(false);
-  await user.click(screen.getByText("演示书籍"));
+  await user.click(sourceTitle);
   expect(details.open).toBe(true);
   expect(screen.getByText("这是电子书中的原文证据。")).toBeTruthy();
   expect(fetchMock).toHaveBeenCalledWith("/api/qa/ebook", expect.objectContaining({ method: "POST" }));
+  const qaCall = fetchMock.mock.calls.find(([path]) => path === "/api/qa/ebook");
+  expect(JSON.parse(qaCall[1].body).bookId).toBe("epub-hash");
+});
+
+test("ebook list failures keep a manual bookId fallback", async () => {
+  const fetchMock = vi.fn(async (path) => {
+    if (path === "/api/auth/me") {
+      return response({ user: { email: "test@123.com", role: "tester" } });
+    }
+    if (path === "/api/ebooks") {
+      return response({ error: { code: "BOOK_LIST_READ_FAILED", message: "无法读取 EPUB 书籍列表" } }, { ok: false, status: 500 });
+    }
+    if (path === "/api/ebooks/1") {
+      return response({ book: { bookId: "1", bookName: "备用书籍" } });
+    }
+    throw new Error(`unexpected request: ${path}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+
+  expect(await screen.findByText(/书籍列表加载失败/u)).toBeTruthy();
+  expect(screen.getByLabelText("手动输入 bookId").value).toBe("1");
+  expect(await screen.findByText("备用书籍")).toBeTruthy();
 });
 
 test("life-notes page loads scoped notes, opens details, and retries failed sync", async () => {
@@ -176,6 +216,9 @@ test("life-notes page loads scoped notes, opens details, and retries failed sync
   const fetchMock = vi.fn(async (path, options = {}) => {
     if (path === "/api/auth/me") {
       return response({ user: { email: "test@123.com", role: "tester" } });
+    }
+    if (path === "/api/ebooks") {
+      return response({ books: [{ bookId: "1", bookName: "演示书籍" }] });
     }
     if (path === "/api/notes?limit=100") {
       return response({ notes: [failedNote] });
@@ -214,6 +257,9 @@ test("life-notes page creates a note and exposes notes AI answers with source co
   const fetchMock = vi.fn(async (path, options = {}) => {
     if (path === "/api/auth/me") {
       return response({ user: { email: "test@123.com", role: "tester" } });
+    }
+    if (path === "/api/ebooks") {
+      return response({ books: [{ bookId: "1", bookName: "演示书籍" }] });
     }
     if (path === "/api/notes?limit=100") {
       listCount += 1;

@@ -64,6 +64,7 @@ describe("API client", () => {
     await api.me();
     await api.logout();
     await api.changeTesterPassword({ password: "new-password", confirmPassword: "new-password" });
+    await api.listEbooks();
     await api.getBook("book/1");
     await api.uploadEpub(file);
 
@@ -72,13 +73,14 @@ describe("API client", () => {
       "/api/auth/me",
       "/api/auth/logout",
       "/api/admin/tester-password",
+      "/api/ebooks",
       "/api/ebooks/book%2F1",
       "/api/ebooks/upload",
     ]);
     for (const [, options] of fetchMock.mock.calls) {
       expect(options.credentials).toBe("same-origin");
     }
-    const uploadOptions = fetchMock.mock.calls[5][1];
+    const uploadOptions = fetchMock.mock.calls[6][1];
     expect(uploadOptions.body).toBeInstanceOf(FormData);
     expect(uploadOptions.headers).toBeUndefined();
   });

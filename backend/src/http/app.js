@@ -339,6 +339,12 @@ export function createHttpHandler({
         return;
       }
 
+      if (request.method === "GET" && url.pathname === "/api/ebooks") {
+        const books = await ebookLibrary.listBooks();
+        writeJson(response, 200, { books });
+        return;
+      }
+
       const bookMetadataMatch = url.pathname.match(/^\/api\/ebooks\/([^/]+)$/u);
       if (request.method === "GET" && bookMetadataMatch) {
         let bookId;

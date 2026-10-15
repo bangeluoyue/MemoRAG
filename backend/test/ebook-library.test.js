@@ -9,6 +9,65 @@ const config = {
   uploads: { epubMaxBytes: 1024 },
 };
 
+test("book list uses the Milvus query iterator, deduplicates book IDs, and reads no content", async () => {
+  const calls = [];
+  const client = {
+    async queryIterator(input) {
+      calls.push(input);
+      return (async function* pages() {
+        yield [
+          { id: "chunk-1", book_id: "book-2", book_name: "第二本书" },
+          { id: "chunk-2", book_id: "1", book_name: "第一本书" },
+        ];
+        yield [
+          { id: "chunk-3", book_id: "1", book_name: "第一本书" },
+          { id: "chunk-4", book_id: "", book_name: "忽略" },
+        ];
+      }());
+    },
+  };
+  const library = createEbookLibrary({
+    config,
+    client,
+    ingestion: { async close() {} },
+  });
+
+  assert.deepEqual(await library.listBooks(), [
+    { bookId: "1", bookName: "第一本书" },
+    { bookId: "book-2", bookName: "第二本书" },
+  ]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].collection_name, "ebook_collection");
+  assert.equal(calls[0].batchSize, 1000);
+  assert.equal(calls[0].filter, 'book_id != ""');
+  assert.deepEqual(calls[0].output_fields, ["id", "book_id", "book_name"]);
+  assert.equal(calls[0].output_fields.includes("content"), false);
+  assert.equal(calls[0].output_fields.includes("vector"), false);
+});
+
+test("book list rejects inconsistent names for the same book ID", async () => {
+  const library = createEbookLibrary({
+    config,
+    client: {
+      async queryIterator() {
+        return (async function* pages() {
+          yield [
+            { id: "chunk-1", book_id: "1", book_name: "第一版" },
+            { id: "chunk-2", book_id: "1", book_name: "冲突版" },
+          ];
+        }());
+      },
+    },
+    ingestion: { async close() {} },
+  });
+
+  await assert.rejects(
+    library.listBooks(),
+    (error) => error instanceof EbookLibraryError
+      && error.code === "BOOK_METADATA_INVALID",
+  );
+});
+
 test("book metadata uses an exact scoped Milvus query and reports missing books", async () => {
   const calls = [];
   const client = {

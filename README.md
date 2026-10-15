@@ -21,7 +21,7 @@ EPUB
 - 生活笔记：PostgreSQL CRUD、ES/Milvus 双索引同步、失败状态与显式 retry。
 - Notes Hybrid RAG：严格按 `userId + knowledgeBase` 隔离，ES/Milvus 并行召回、稳定 `note_id` 去重、RRF、可选 Qwen Rerank。
 - Node HTTP API 和 React + Vite 演示页面，包含两个固定账号的 Cookie 会话认证。
-- 管理员可重置测试员密码、按 Milvus 元数据查看书名，并通过网页复用安全 EPUB 入库流程。
+- 登录用户可从 Milvus 动态书籍列表按书名选择 EPUB；管理员还可重置测试员密码，并通过网页复用安全 EPUB 入库流程。
 - 模型/整次请求超时、来源编号校验、默认关闭的 LangSmith metadata-only 追踪。
 
 历史 coverage、依赖改写、缺口恢复和复杂 evaluate Graph 仍保留在源码与 Git 历史中，但不再是默认问答路径。

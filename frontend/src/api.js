@@ -79,6 +79,10 @@ export const api = {
     return request(`/api/ebooks/${encoded(bookId)}`, { signal });
   },
 
+  listEbooks({ signal } = {}) {
+    return request("/api/ebooks", { signal });
+  },
+
   uploadEpub(file) {
     const formData = new FormData();
     formData.append("file", file);
