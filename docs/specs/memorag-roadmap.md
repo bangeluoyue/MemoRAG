@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v1.15（2026-10-15）
+> 版本：v1.16（2026-10-15）
 >
-> 状态：**两个独立 RAG 服务及核心问答逻辑保持不变；固定账号登录、会话权限与管理员 EPUB 上传已完成真实验收。登录用户现在可从 Milvus 动态书籍列表按书名选择 EPUB，上传成功后自动刷新并选中新书；本轮只完成 Mock，不读取或修改真实 Milvus 数据。**
+> 状态：**两个独立 RAG 服务及核心问答逻辑保持不变；登录、上传、动态书籍列表和 LangSmith Trace 已完成真实验收。最小 OpenEvals 三指标评估入口已完成 dry-run/Mock，等待用户提供一条含实际 answer 与 sources 的 EPUB 样本后显式运行真实 Judge。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -1068,6 +1068,16 @@ E2 与先前约 10.5 秒的 `sdk_or_upstream` 超时不同：本次是 MemoRAG �
 **前端体验**：EPUB 页面加载后按书名展示下拉框，选项值仍是完整 `bookId`，切换后问答和右侧知识库信息同步更新。管理员上传成功后刷新列表并自动选中新书；管理员与测试员均可选择书籍，上传权限仍只属于管理员。列表为空或加载失败时保留手动 `bookId` 入口。
 
 **验证边界**：后端官方 `npm test` 的 16/16 测试文件通过，无文件隔离复核为 156 个顶层测试、161 个含嵌套测试，0 失败；前端 2 个测试文件、10/10 通过，Vite 生产构建成功。Mock 覆盖 Milvus 迭代分页字段、去重、元数据冲突、登录保护、列表与详情路由共存、书籍切换、上传刷新选中及失败时手动回退。本轮未连接真实 Milvus，未调用 Embedding、LLM、Rerank 或联网服务，也未修改任何数据；真实多书列表只需用户后续浏览器验收。
+
+#### LangSmith 最小三指标评估（v1.16）
+
+**实现范围**：复用课程复制到 `backend/legacy/eval/` 的三个入口，删除旧客服数据和旧 `rag_agent.mjs` 依赖，增加 `openevals@0.2.2`。评估只包含标准 Groundedness、Helpfulness、Retrieval Relevance，三个评估器共用一个显式 `qwen-plus` Judge，温度 0、零自动重试、串行各调用一次；不增加 Correctness 或 Judge Agent。
+
+**数据与执行边界**：Dataset 样本必须来自一条已完成的公开 EPUB 问答，保存 MemoRAG 实际 answer、按顺序的本地引用、真实文档 ID 和原文。校验拒绝空来源、重复 ID、跨 bookId、引用乱序/越界及 Notes 数据；实际 answer 被标为 `recorded_answer`，不伪装成参考答案。Experiment 只回放这条已记录结果，不调用 RAG、Embedding、Retriever 或数据库。CLI 默认 dry-run，只有显式 `--execute` 才创建/复用 Dataset 并运行固定 3 次 Judge；本地样本与结果目录均被 Git 忽略。
+
+**当前样本状态**：仓库与已有 metadata-only trace 没有保存《阿Q正传》问答的完整 answer 和 sources，因此未提交、未编造真实样本，也没有上传 Dataset 或产生评分。用户需从一次真实 HTTP 响应保存 `answer`、`sources[].id/reference/bookId/bookName/chapterNum/chunkIndex/content`、捕获时间及可选 trace ID，再执行显式命令。
+
+**验证结果**：后端官方 `npm test` 的 17/17 测试文件通过，无文件隔离复核为 160 个顶层测试、165 个含嵌套测试，0 失败。新增 Mock 覆盖样本/引用校验、默认零外部调用、三个标准 Prompt 的字段适配与共享 Judge、单 Example 限制、固定三次 Judge、串行/单次设置、LangSmith 链接和本地结果落盘。两个真实 CLI dry-run 均确认 Judge/RAG/Embedding 调用为 0。本轮未访问 LangSmith、未调用真实 Judge/RAG/Embedding，也未修改数据库、Graph、Retriever、Prompt、HTTP 或 React。
 
 ### 后续阶段（本阶段不实施）
 

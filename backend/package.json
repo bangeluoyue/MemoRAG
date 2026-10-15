@@ -9,6 +9,8 @@
     "ingest:epub": "node src/cli/ingest-epub.js",
     "notes": "node src/cli/notes.js",
     "chat": "node src/cli/chat.js",
+    "eval:dataset": "node legacy/eval/build_dataset.mjs",
+    "eval:run": "node legacy/eval/run_eval.mjs",
     "start": "node src/http/server.js",
     "test": "node --import ./test-support/setup.js --test"
   },
@@ -26,6 +28,7 @@
     "dotenv": "^18.0.7",
     "html-to-text": "9.0.5",
     "langsmith": "^0.10.11",
+    "openevals": "0.2.2",
     "pg": "8.23.1",
     "zod": "^4.6.5"
   }

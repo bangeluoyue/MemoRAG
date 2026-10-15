@@ -97,6 +97,10 @@ RERANK_FAILURE_MODE=fallback
 
 LANGSMITH_TRACING=false
 MEMORAG_LANGSMITH_CONTENT_MODE=metadata_only
+LANGSMITH_EVAL_DATASET=memorag-epub-eval-v1
+LANGSMITH_EVAL_EXPERIMENT_PREFIX=memorag-openevals
+EVAL_MODEL_NAME=qwen-plus
+EVAL_TIMEOUT_MS=60000
 ```
 
 生活笔记还需要 `DATABASE_URL`、`ELASTICSEARCH_NODE`、`ELASTICSEARCH_NOTES_INDEX` 和 `MILVUS_NOTES_COLLECTION`。`SESSION_SECRET` 至少 32 字符；`ADMIN_INITIAL_PASSWORD` 只在管理员尚不存在时使用，服务启动不会覆盖之后修改的密码。生产环境默认使用 Secure Cookie，也可通过 `AUTH_COOKIE_SECURE` 显式配置。
@@ -122,11 +126,17 @@ npm run ingest:epub -- ./book.epub --book-id demo-book
 
 # 默认 dry-run，不连接三处存储
 npm run notes -- create --user-id demo-user --content "演示笔记"
+
+# 默认只校验本地真实样本，不访问 LangSmith 或模型
+npm run eval:dataset -- --sample legacy/eval/local/aq.json
+npm run eval:run -- --sample legacy/eval/local/aq.json
 ```
 
 只有在明确授权真实写入后才能对入库或笔记命令增加 `--execute`。入库工具不会删除、重建或覆盖现有 EPUB Collection；禁止直接运行旧课程脚本中的 `dropCollection` 或 seed 逻辑。
 
 EPUB 入库的 Embedding 批次默认且最多为 10 条，与 `text-embedding-v3` 的同步接口限制一致；更大的 `--batch-size` 会在调用上游前被拒绝。
+
+LangSmith 最小评估复用 `legacy/eval/` 的课程入口，但不再包含客服数据或旧 RAG。真实样本必须来自一次已完成的 EPUB HTTP 问答，并保留实际 answer、来源顺序、文档 ID 和原文；只有为 `eval:run` 增加 `--execute` 才会上传 Dataset 并串行调用 Groundedness、Helpfulness、Retrieval Relevance 三个 Judge，各一次且不重跑 RAG。完整格式和隐私边界见 [`legacy/eval/README.md`](legacy/eval/README.md)。
 
 ## HTTP API
 

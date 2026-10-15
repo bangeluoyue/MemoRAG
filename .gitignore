@@ -48,6 +48,8 @@ coverage/
 uploads/
 volumes/
 **/data/private/
+backend/legacy/eval/local/
+backend/legacy/eval/results/
 
 # ==============================
 # Docker Local Data
