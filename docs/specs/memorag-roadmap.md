@@ -1,8 +1,8 @@
 # MemoRAG — SDD 开发规格与分阶段实施计划
 
-> 版本：v1.8（2026-10-15）
+> 版本：v1.9（2026-10-15）
 >
-> 状态：**P3-0～P3-4、P4-A、P4-B、P6-A、P6-B 与 P5-A 已完成；P5-B 真实验收仍未通过，但后续最小超时分类修复已完成。可信的 OpenAI/LangChain SDK 提前超时现统一返回安全 `504 MODEL_TIMEOUT`，保留实际模型节点 stage，并区分应用计时器与 SDK/上游来源；后端 137/137、前端 6/6 Mock 回归通过。约 10.5 秒限制的具体环境来源仍无充分证据，尚待一次受控真实复验。**
+> 状态：**P3-0～P3-4、P4-A、P4-B、P6-A、P6-B 与 P5-A 已完成；P5-B 超时分类修复完成。Clash 切回规则模式后，E1 已真实通过并得到正确原文引用；最终本地验收的 E2 不再出现约 10 秒 SDK 提前超时，但在 `evaluate` 节点达到应用 60 秒上限，安全返回 `504 MODEL_TIMEOUT / application`，故按停止规则未继续 E3/N1。后端 137/137、前端 6/6 Mock 与前端生产构建通过；当前结论为暂不适合进入部署，需先完成 evaluate 最小诊断与稳定性修复。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -967,7 +967,28 @@ flowchart LR
 
 **测试与修改文件**：新增 route、evaluate、generate 三个第三方 `TimeoutError` Graph Mock、原始 `APIConnectionTimeoutError` Mock、三类非超时反例，以及 SDK/上游超时的安全 HTTP 504 Mock；原有应用级模型和 Agent 超时测试继续通过。完整结果为后端 14 个测试文件、137/137 Mock（含嵌套子测试），前端 2 个测试文件、6/6。修改 `backend/src/rag/shared/timeouts.js`、`backend/src/http/app.js`、`backend/test/ebook-rag.test.js`、`backend/test/http-api.test.js`、新增 `backend/test/timeouts.test.js`，同步更新 `backend/README.md` 与本 SDD。
 
-**仍需真实验证**：获得再次授权后只复验一个固定 EPUB 问题、不自动重试，记录 HTTP 状态、`stage`、`timeoutSource` 与客户端总耗时。若仍在约 10.5 秒返回 `sdk_or_upstream`，再结合对应时刻的兼容端点/网关访问日志判断限制所在；若端点侧没有请求记录，才进一步做不含凭证和正文的 DNS/TCP/TLS 最小连通性计时。该复验用于定位环境故障，不通过增加应用等待时间掩盖问题。
+**v1.8 当时仍需真实验证（E1 已在 v1.9 前完成）**：获得再次授权后只复验一个固定 EPUB 问题、不自动重试，记录 HTTP 状态、`stage`、`timeoutSource` 与客户端总耗时。E1 后续已在 Clash 规则模式下成功，不再出现约 10.5 秒 `sdk_or_upstream` 超时；本次结果见下方 v1.9 验收记录。单次成功不能证明此前故障的唯一来源，也不通过增加应用等待时间掩盖问题。
+
+#### 上线前最终本地验收（v1.9）
+
+**执行边界**：本轮没有修改业务代码、数据库 Schema 或 `ebook_collection`，没有开启联网、EPUB/生活笔记 Rerank 或 LangSmith/LangChain 追踪；显式保持 `LLM_TIMEOUT_MS=60000`、`AGENT_TIMEOUT_MS=120000`、`LLM_MAX_RETRIES=0`。E1 沿用紧邻本轮、同一环境边界下已完成的真实复验，不重复收费调用；E2 仅请求一次且没有重试。E2 触发停止条件后未执行 E3、N1，未创建任何临时笔记。
+
+**环境与数据服务只读结果**：HTTP `/health` 为 200。`DATABASE_URL` 已配置且 PostgreSQL 可连接，`life_notes` 表字段与 migration 一致，当前可见行数 0；Elasticsearch `life_notes` 为 green、文档数 0，`note_id/user_id/knowledge_base` 为 keyword，`title/content` 为 IK text。Milvus `ebook_collection` 保持 3042 行、已加载、1024 维 `IVF_FLAT + COSINE` 且索引完成；`life_notes` 已加载、字段与 1024 维契约一致，逻辑查询可见 0 条。其物理统计仍显示 7 个已删除实体，这是删除后未压缩的统计，不是可查询残留。系统代理模式只读显示为 manual，测试进程无 HTTP/HTTPS/ALL/NO_PROXY 或 Node 环境代理变量；仓库无法在不连接 Clash 控制接口的情况下独立证明其内部规则模式，本轮未修改任何代理设置。
+
+**真实问答结果**：
+
+| 用例 | HTTP/耗时 | 路由与调用 | 回答、证据与结论 |
+| --- | --- | --- | --- |
+| E1：阿朱曾经乔装成谁去骗马夫人？ | `200` / `18.086s` | `single_retrieval`；LLM 3 次、本地检索 1 次 | 正确回答白世镜（白长老）；最终两条来源 `1_74_36`、`1_74_37` 分别直接说明阿朱选择模仿白长老及实际装成白世镜，coverage=supported、引用合法且人工内容核对通过。已知小问题是 `route.reason` 曾错误写成答案为马大元，但未影响 route mode、检索、最终回答或来源。 |
+| E2：阿朱为什么要假扮段正淳？ | `504` / `64.401s` | `stage=evaluate`；`timeoutSource=application`；配置上限 60000 ms | 请求已进入 evaluate，但该次模型调用未在 60 秒内返回。HTTP 与服务端日志均安全分类为 `MODEL_TIMEOUT`。失败结果没有最终 route、调用次数、coverage、evidenceSelection、answer 或 sources，不能据此猜测人物关系、召回或证据筛选质量。 |
+| E3：依赖型 EPUB 多跳 | 未执行 | E2 达到严重异常停止条件 | 未验证。 |
+| N1：生活笔记多部分问答 | 未执行 | E2 达到严重异常停止条件 | 未创建笔记，无本轮 note_id 或清理任务；三存储仍保持预检可见数据基线。 |
+
+E2 与先前约 10.5 秒的 `sdk_or_upstream` 超时不同：本次是 MemoRAG 自身应用计时器在 evaluate 精确生效，证明超时分类修复有效，也说明当前主要阻断已转为评估模型调用的真实延迟/稳定性。单次结果不足以判定 Clash 是先前问题的唯一原因，也不足以区分评估输入规模、兼容模型结构化输出延迟或服务端瞬时波动。
+
+**离线回归与构建**：后端 14 个测试文件、137/137 Mock（含嵌套子测试）通过；前端 2 个测试文件、6/6 通过；Vite 生产构建成功。测试预加载继续显式关闭 LangSmith/LangChain 追踪。构建产物位于已忽略的 `frontend/dist/`。
+
+**部署结论：暂不适合部署。** 数据链路、HTTP、React、E1 单跳答案与引用、Mock 和构建均达到实习项目展示基础，但一个核心单跳问题仍会占满 60 秒并失败，现场演示稳定性不足。冻结新增功能，下一步只应做 evaluate 最小诊断：在不记录 prompt/正文的前提下，于模型调用前记录 route mode、当前检索次数、评估文档 ID/数量和裁剪后字符数，使超时也能保留安全上下文；取得证据后再决定是否精简评估输入/提示或调整模型选择。不得通过提高超时、自动重试、跳过 coverage 或无依据生成来掩盖问题。该诊断涉及业务代码，须由用户另行确认后实施。
 
 ### 后续阶段（本阶段不实施）
 
