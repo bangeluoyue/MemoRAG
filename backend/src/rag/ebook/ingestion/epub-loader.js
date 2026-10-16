@@ -1,5 +1,6 @@
-import { stat } from "node:fs/promises";
-import { basename, extname, resolve } from "node:path";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, extname, join, resolve } from "node:path";
 import { initEpubFile } from "@lingo-reader/epub-parser";
 import { convert } from "html-to-text";
 
@@ -59,8 +60,12 @@ export async function loadEpubChapters(filePath, {
 } = {}) {
   const absolutePath = await validateEpubPath(filePath, { statFile });
   let epub;
+  let resourceDirectory;
   try {
-    epub = await openEpub(absolutePath);
+    // The parser extracts images/CSS even for text-only ingestion. Keep these
+    // resources out of the read-only application directory and isolate each job.
+    resourceDirectory = await mkdtemp(join(tmpdir(), "memorag-epub-resources-"));
+    epub = await openEpub(absolutePath, resourceDirectory);
     const spine = epub.getSpine();
     if (!Array.isArray(spine) || !spine.length) {
       throw new EpubInputError("EPUB_SPINE_EMPTY", "EPUB 不包含可处理的 spine 章节");
@@ -110,6 +115,12 @@ export async function loadEpubChapters(filePath, {
     if (error instanceof EpubInputError) throw error;
     throw new EpubInputError("EPUB_PARSE_FAILED", "EPUB 解析失败", { cause: error });
   } finally {
-    await epub?.destroy?.();
+    try {
+      await epub?.destroy?.();
+    } finally {
+      if (resourceDirectory) {
+        await rm(resourceDirectory, { recursive: true, force: true });
+      }
+    }
   }
 }
