@@ -1,0 +1,18 @@
+[Unit]
+Description=MemoRAG Elasticsearch 9.5.4 with IK (Compose)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/memorag/deploy/elasticsearch
+ExecStart=/usr/bin/docker compose up -d --no-build --wait --wait-timeout 180
+ExecStop=/usr/bin/docker compose stop
+TimeoutStartSec=210
+TimeoutStopSec=90
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

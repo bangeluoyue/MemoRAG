@@ -1,0 +1,31 @@
+[Unit]
+Description=MemoRAG demo HTTP API
+Wants=network-online.target
+Requires=memorag-elasticsearch.service
+After=network-online.target memorag-elasticsearch.service
+
+[Service]
+Type=simple
+User=memorag
+Group=memorag
+WorkingDirectory=/opt/memorag/backend
+Environment=NODE_ENV=production
+Environment=MEMORAG_ENV_FILE=/etc/memorag/production.env
+ExecStart=/usr/local/bin/node --max-old-space-size=384 src/http/server.js
+Restart=no
+TimeoutStopSec=45
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+UMask=0077
+LimitNOFILE=65535
+MemoryAccounting=true
+MemoryMax=768M
+TasksMax=128
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -2,7 +2,7 @@
 
 > 版本：v1.17（2026-10-15）
 >
-> 状态：**两个独立 RAG 服务及核心问答逻辑保持不变；登录、上传、动态书籍列表、LangSmith Trace 和最小 OpenEvals 三指标评估均已完成真实验收。当前冻结已验收功能，下一步只制定最小安全部署方案。**
+> 状态：**两个独立 RAG 服务及核心问答逻辑保持不变；登录、上传、动态书籍列表、LangSmith Trace 和最小 OpenEvals 三指标评估均已完成真实验收。部署 A～C 已完成，ES+IK 镜像已在本地构建；当前冻结已验收功能，阶段 D 须等待用户确认。**
 >
 > 本版依据当前仓库代码、测试、已安装依赖与旧 Demo 核对。除非明确标注为“已验证”，本文不把历史报告、配置名或旧 Demo 当作现有能力。
 
@@ -1098,6 +1098,16 @@ Experiment：[memorag-openevals-90bf7d44](https://smith.langchain.com/o/c8262b30
 **回归与边界**：本轮离线复核中，后端官方测试 17/17 文件通过，评估专项 10/10 通过；前端 2/2 文件、10/10 测试通过，Vite 生产构建成功（23 个模块）。测试显式关闭 LangSmith/LangChain 新旧追踪开关、联网和 Rerank，没有执行 `--execute`，没有访问真实模型、LangSmith、Milvus、Elasticsearch 或数据库。上述三个 1.0 只代表一个公开文学问答样本，不能推导整个 RAG 系统达到 100% 准确率；Retrieval Relevance Judge 的解释显示 8 条来源中只有部分直接相关，仍有召回精度优化空间，本阶段不继续调整 Retriever、Prompt 或 Graph。
 
 **实际修改文件**：`backend/legacy/eval/evaluators.mjs`、`backend/legacy/eval/run_eval.mjs`、`backend/test/evaluation.test.js` 和本 SDD。真实样本 `backend/legacy/eval/local/` 与本地结果 `backend/legacy/eval/results/` 继续由 Git 忽略，不纳入版本库。
+
+#### v1.17 阿里云最小部署准备（2026-10-16，A～C）
+
+按本轮部署任务准备 ECS Nginx + systemd Node + ES 9.5.4/IK 9.5.4、Neon Free PostgreSQL 和 Zilliz Free-01 Milvus 2.6.x；保留两条独立 RAG 及认证业务代码。新增部署文件和逐项操作文档见 [`deploy/README.md`](../../deploy/README.md)。本轮没有进入服务器部署，没有云端数据库读写、模型/Embedding/Judge 调用或真实 OpenEvals 复跑。
+
+首次只读检查确认 ECS 为 Alibaba Cloud Linux 3.2104 U12，2 核、约 3.5 GiB 内存、1 GiB Swap，当时已有 Docker/Compose、尚无 Node/Nginx，vm.max_map_count 待调整；SSH 使用当前 aliyun 别名。用户随后手动准备了 Docker 26.1.3、Compose 2.27.0、Nginx 1.24.0、Node.js 22.22.3 和 npm 10.9.8；MemoRAG 服务尚未启动，ES 镜像尚未安装到 ECS。本次收尾未 SSH 复查或修改服务器。提交前 Git 基线为 b7a3a26，相对 origin/main ahead 27；部署改动按明确文件清单提交，不自动推送。
+
+Milvus Token/TLS 已有支持；依官方兼容表将 SDK 从 3.0.6 精确固定为 2.6.17 并更新锁文件。新增 `MEMORAG_ENV_FILE` 选择独立私有配置、首次本地生产密钥生成工具及默认离线的部署初始化 CLI；Neon 复用两份原 SQL，Zilliz 使用当前读写字段、1024 维和 AUTOINDEX/COSINE，仅创建不存在的 Collection，兼容已有资源只复用、不兼容停止。ES 保留 8.19.2 客户端，通过相邻主版本 REST compatibility 与 ES 9.x 通信，真实兼容性留待 D 验证。
+
+离线结果：此前后端 18/18 测试文件（含 9 项部署安全 Mock）、前端 10/10、Vite 构建、Compose 解析、Nginx 禁网配置检查和 systemd 临时路径校验通过。用户随后实际执行 `docker compose -f deploy/elasticsearch/compose.yaml build` 与 `bash deploy/check-offline.sh`，确认 `memorag-elasticsearch-ik:9.5.4` 镜像构建成功，后端 180/180、前端 10/10、Vite 生产构建及 PostgreSQL/Milvus/Elasticsearch/accounts 四项初始化 dry-run 均通过，未调用真实云数据库或付费模型；这些为用户提供的执行结果，本次收尾不重复完整测试。收尾仅复核 Diff、忽略规则、部署文件完整性、语法及配置，不修改已验收业务逻辑。未实测 ECS 上 ES 内存，未把离线通过写作线上部署成功。生产私有文件 0600、Git 忽略，阶段 A～C 已确认当前凭证在全部 Git 历史与前端产物中无匹配。进入 D 须等待用户确认；域名/证书/必要备案和既有 8888 服务用途仍是独立检查点，正式账号不得通过公网 HTTP 登录。
 
 ### 后续阶段（本阶段不实施）
 

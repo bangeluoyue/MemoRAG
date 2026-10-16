@@ -60,6 +60,8 @@ npm run build
 
 详细后端配置与接口见 [`backend/README.md`](backend/README.md)，前端说明见 [`frontend/README.md`](frontend/README.md)，当前规格与验收边界见 [`docs/specs/memorag-roadmap.md`](docs/specs/memorag-roadmap.md)。
 
+阿里云最小部署（ECS Nginx/Node/ES + Neon + Zilliz）的文件、离线检查及逐项确认步骤见 [`deploy/README.md`](deploy/README.md)。生产使用独立私有配置，不覆盖本地 `.env`。
+
 ## 安全边界
 
 - `.env`、密钥、数据库数据、日志和构建产物不得提交。

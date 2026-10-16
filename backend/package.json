@@ -24,7 +24,7 @@
     "@langchain/openai": "^1.6.2",
     "@langchain/textsplitters": "1.0.2",
     "@lingo-reader/epub-parser": "0.4.6",
-    "@zilliz/milvus2-sdk-node": "^3.0.6",
+    "@zilliz/milvus2-sdk-node": "2.6.17",
     "dotenv": "^18.0.7",
     "html-to-text": "9.0.5",
     "langsmith": "^0.10.11",

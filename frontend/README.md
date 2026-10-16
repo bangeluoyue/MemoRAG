@@ -31,3 +31,5 @@ npm run build
 ```
 
 生产构建输出到被 Git 忽略的 `dist/`。
+
+生产环境由 Nginx 提供 `dist/` 并把同域 `/api` 代理到 loopback 后端，保持现有相对路径和 `credentials: same-origin`；无需把云端地址或密钥传入 Vite。HTTPS 配置及上线检查见 [`deploy/README.md`](../deploy/README.md)。

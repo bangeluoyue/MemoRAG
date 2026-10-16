@@ -1,8 +1,13 @@
 import { config as loadDotEnv } from "dotenv";
 import { fileURLToPath } from "node:url";
 
-const envPath = fileURLToPath(new URL("../.env", import.meta.url));
-loadDotEnv({ path: envPath, quiet: true }); //quiet: true：关闭 dotenv 正常加载时的提示信息
+// Production/CLI can select a private file without falling back to development secrets.
+const envPath = process.env.MEMORAG_ENV_FILE
+  || fileURLToPath(new URL("../.env", import.meta.url));
+const loadedEnv = loadDotEnv({ path: envPath, quiet: true });
+if (process.env.MEMORAG_ENV_FILE && loadedEnv.error) {
+  throw new Error("无法读取 MEMORAG_ENV_FILE 指定的环境变量文件");
+}
 
 function required(env, name) {
   const value = env[name]?.trim();

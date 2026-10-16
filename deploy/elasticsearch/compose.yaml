@@ -1,0 +1,42 @@
+name: memorag-demo
+services:
+  elasticsearch:
+    build:
+      context: .
+    image: memorag-elasticsearch-ik:9.5.4
+    # No automatic retry after a failed start; inspect the cause first.
+    restart: "no"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.ml.enabled: "false"
+      bootstrap.memory_lock: "true"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+      node.processors: "2"
+    ports:
+      - "127.0.0.1:9200:9200"
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    cpus: 1.5
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65535
+        hard: 65535
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --max-time 8 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+volumes:
+  es-data:

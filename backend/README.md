@@ -2,6 +2,8 @@
 
 后端提供两个独立 RAG 服务、EPUB 入库、生活笔记 CRUD/双索引同步，以及基于 Node 内置 HTTP Server 的演示 API。HTTP API 使用两个固定账号和 PostgreSQL 持久化的 HttpOnly Cookie 会话。
 
+生产部署使用 `MEMORAG_ENV_FILE` 选择私有环境文件；Milvus SDK 固定 2.6.17 以匹配 Zilliz 2.6.x。部署初始化入口 `node src/cli/init-deployment.js <postgres|milvus|elasticsearch|accounts>` 默认为不联网的 dry-run，真实执行必须单独确认。完整步骤与边界见 [`deploy/README.md`](../deploy/README.md)。
+
 ## 当前问答架构
 
 ### EPUB Agentic RAG
